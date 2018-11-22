@@ -29,7 +29,7 @@ import org.neo4j.bolt.v1.BoltProtocolV1;
 import org.neo4j.bolt.v1.messaging.BoltResponseMessageWriterV1;
 import org.neo4j.bolt.v2.messaging.Neo4jPackV2;
 import org.neo4j.bolt.v3.messaging.BoltRequestMessageReaderV3;
-import org.neo4j.kernel.impl.logging.LogService;
+import org.neo4j.logging.internal.LogService;
 
 /**
  * Bolt protocol V3. It hosts all the components that are specific to BoltV3
@@ -43,6 +43,7 @@ public class BoltProtocolV3 extends BoltProtocolV1
         super( channel, connectionFactory, stateMachineFactory, logging );
     }
 
+    @Override
     protected Neo4jPack createPack()
     {
         return new Neo4jPackV2();
@@ -54,6 +55,7 @@ public class BoltProtocolV3 extends BoltProtocolV1
         return VERSION;
     }
 
+    @Override
     protected BoltRequestMessageReader createMessageReader( BoltChannel channel, Neo4jPack neo4jPack, BoltConnection connection, LogService logging )
     {
         BoltResponseMessageWriterV1 responseWriter = new BoltResponseMessageWriterV1( neo4jPack, connection.output(), logging );

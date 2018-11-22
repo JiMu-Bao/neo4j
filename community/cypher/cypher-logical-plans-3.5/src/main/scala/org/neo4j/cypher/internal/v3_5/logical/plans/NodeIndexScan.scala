@@ -19,18 +19,28 @@
  */
 package org.neo4j.cypher.internal.v3_5.logical.plans
 
-import org.opencypher.v9_0.util.attribution.IdGen
-import org.opencypher.v9_0.expressions.{LabelToken, PropertyKeyToken}
+import org.opencypher.v9_0.expressions._
+import org.opencypher.v9_0.util.attribution.{IdGen, SameId}
 
 /**
   * This operator does a full scan of an index, producing one row per entry.
   */
 case class NodeIndexScan(idName: String,
                          label: LabelToken,
-                         propertyKey: PropertyKeyToken,
-                         argumentIds: Set[String])
+                         property: IndexedProperty,
+                         argumentIds: Set[String],
+                         indexOrder: IndexOrder)
                         (implicit idGen: IdGen)
-  extends NodeLogicalLeafPlan(idGen) {
+  extends IndexLeafPlan(idGen) {
+
+  override def properties: Seq[IndexedProperty] = Seq(property)
+
+  override def cachedNodeProperties: Traversable[CachedNodeProperty] = property.maybeCachedNodeProperty(idName)
 
   override val availableSymbols: Set[String] = argumentIds + idName
+
+  override def availableCachedNodeProperties: Map[Property, CachedNodeProperty] = property.asAvailablePropertyMap(idName)
+
+  override def copyWithoutGettingValues: NodeIndexScan =
+    NodeIndexScan(idName, label, IndexedProperty(property.propertyKeyToken, DoNotGetValue), argumentIds, indexOrder)(SameId(this.id))
 }

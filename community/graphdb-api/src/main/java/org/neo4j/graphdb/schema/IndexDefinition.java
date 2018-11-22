@@ -19,6 +19,8 @@
  */
 package org.neo4j.graphdb.schema;
 
+import java.util.Optional;
+
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.RelationshipType;
 import org.neo4j.graphdb.index.IndexManager;
@@ -38,7 +40,9 @@ public interface IndexDefinition
      * (that {@link #isMultiTokenIndex()} returns {@code false}). If this is not the case, then an {@link IllegalStateException} is thrown.
      *
      * @return the {@link Label label} this index definition is associated with.
+     * @deprecated This method is deprecated and will be removed in next major release. Please consider using {@link #getLabels()} instead.
      */
+    @Deprecated
     Label getLabel();
 
     /**
@@ -59,7 +63,9 @@ public interface IndexDefinition
      * (that {@link #isMultiTokenIndex()} returns {@code false}). If this is not the case, then an {@link IllegalStateException} is thrown.
      *
      * @return the {@link RelationshipType relationship type} this index definition is associated with.
+     * @deprecated This method is deprecated and will be removed in next major release. Please consider using {@link #getRelationshipTypes()} instead.
      */
+    @Deprecated
     RelationshipType getRelationshipType();
 
     /**
@@ -129,4 +135,10 @@ public interface IndexDefinition
      * @return {@code true} if this is a composite index.
      */
     boolean isCompositeIndex();
+
+    /**
+     * Get the name given to this index when it was created, if any.
+     * If the index was not given any name, then the string {@code "Unnamed index"} is returned instead.
+     */
+    String getName();
 }

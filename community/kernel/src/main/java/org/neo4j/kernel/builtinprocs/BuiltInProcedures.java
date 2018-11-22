@@ -44,6 +44,7 @@ import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.helpers.collection.MapUtil;
 import org.neo4j.helpers.collection.PrefetchingResourceIterator;
 import org.neo4j.internal.kernel.api.IndexReference;
+import org.neo4j.internal.kernel.api.InternalIndexState;
 import org.neo4j.internal.kernel.api.NodeExplicitIndexCursor;
 import org.neo4j.internal.kernel.api.RelationshipExplicitIndexCursor;
 import org.neo4j.internal.kernel.api.SchemaRead;
@@ -75,7 +76,10 @@ import static org.neo4j.procedure.Mode.WRITE;
 @SuppressWarnings( {"unused", "WeakerAccess"} )
 public class BuiltInProcedures
 {
+    private static final int NOT_EXISTING_INDEX_ID = -1;
     public static final String EXPLICIT_INDEX_DEPRECATION = "This procedure is deprecated by the schema and full-text indexes, and will be removed in 4.0.";
+    public static final String DB_SCHEMA_DEPRECATION = "This procedure is deprecated by the db.schema.visualization procedure, and will be removed in 4.0.";
+
     @Context
     public KernelTransaction tx;
 
@@ -119,6 +123,7 @@ public class BuiltInProcedures
         {
             TokenRead tokenRead = tx.tokenRead();
             TokenNameLookup tokens = new SilentTokenNameLookup( tokenRead );
+            IndexingService indexingService = resolver.resolveDependency( IndexingService.class );
 
             SchemaRead schemaRead = tx.schemaRead();
             List<IndexReference> indexes = asList( schemaRead.indexesGetAll() );
@@ -140,21 +145,26 @@ public class BuiltInProcedures
                     }
 
                     SchemaDescriptor schema = index.schema();
+                    long indexId = getIndexId( indexingService, schema );
                     List<String> tokenNames = Arrays.asList( tokens.entityTokensGetNames( schema.entityType(), schema.getEntityTokenIds() ) );
                     List<String> propertyNames = propertyNames( tokens, index );
                     String description = "INDEX ON " + schema.userDescription( tokens );
-                    String state = schemaRead.indexGetState( index ).toString();
+                    InternalIndexState internalIndexState = schemaRead.indexGetState( index );
+                    String state = internalIndexState.toString();
                     Map<String,String> providerDescriptorMap = indexProviderDescriptorMap( schemaRead.index( schema ) );
                     PopulationProgress progress = schemaRead.indexGetPopulationProgress( index );
                     IndexPopulationProgress indexProgress = new IndexPopulationProgress( progress.getCompleted(), progress.getTotal() );
-                    result.add( new IndexResult( description,
+                    String failureMessage = internalIndexState == InternalIndexState.FAILED ? schemaRead.indexGetFailure( index ) : "";
+                    result.add( new IndexResult( indexId,
+                                                 description,
                                                  index.name(),
                                                  tokenNames,
                                                  propertyNames,
                                                  state,
                                                  type,
                                                  indexProgress.getCompletedPercentage(),
-                                                 providerDescriptorMap ) );
+                                                 providerDescriptorMap,
+                                                 failureMessage ) );
                 }
                 catch ( IndexNotFoundKernelException e )
                 {
@@ -205,16 +215,31 @@ public class BuiltInProcedures
         }
     }
 
-    @Procedure( name = "okapi.schema", mode = Mode.READ )
-    @Description( "Show the derived property schema of the data in tabular form." )
-    public Stream<SchemaInfoResult> propertySchema()
+    @Procedure( name = "db.schema.nodeTypeProperties", mode = Mode.READ )
+    @Description( "Show the derived property schema of the nodes in tabular form." )
+    public Stream<NodePropertySchemaInfoResult> nodePropertySchema()
     {
-        return new SchemaCalculator( tx ).calculateTabularResultStream();
+        return new SchemaCalculator( tx ).calculateTabularResultStreamForNodes();
     }
 
+    @Procedure( name = "db.schema.relTypeProperties", mode = Mode.READ )
+    @Description( "Show the derived property schema of the relationships in tabular form." )
+    public Stream<RelationshipPropertySchemaInfoResult> relationshipPropertySchema()
+    {
+        return new SchemaCalculator( tx ).calculateTabularResultStreamForRels();
+    }
+
+    @Deprecated
     @Description( "Show the schema of the data." )
-    @Procedure( name = "db.schema", mode = READ )
-    public Stream<SchemaProcedure.GraphResult> metaGraph()
+    @Procedure( name = "db.schema", mode = READ, deprecatedBy = DB_SCHEMA_DEPRECATION )
+    public Stream<SchemaProcedure.GraphResult> schema()
+    {
+        return schemaVisualization();
+    }
+
+    @Description( "Visualize the schema of the data. Replaces db.schema." )
+    @Procedure( name = "db.schema.visualization", mode = READ )
+    public Stream<SchemaProcedure.GraphResult> schemaVisualization()
     {
         return Stream.of( new SchemaProcedure( graphDatabaseAPI, tx ).buildSchemaGraph() );
     }
@@ -504,7 +529,7 @@ public class BuiltInProcedures
     {
         IndexManager mgr = graphDatabaseAPI.index();
         Index<Node> index;
-        if ( config.isEmpty() )
+        if ( config == null || config.isEmpty() )
         {
             index = mgr.forNodes( explicitIndexName );
         }
@@ -523,7 +548,7 @@ public class BuiltInProcedures
     {
         IndexManager mgr = graphDatabaseAPI.index();
         Index<Relationship> index;
-        if ( config.isEmpty() )
+        if ( config == null || config.isEmpty() )
         {
             index = mgr.forRelationships( explicitIndexName );
         }
@@ -653,6 +678,18 @@ public class BuiltInProcedures
         }
         // Failures will be expressed as exceptions before the return
         return Stream.of( new BooleanResult( Boolean.TRUE ) );
+    }
+
+    private static long getIndexId( IndexingService indexingService, SchemaDescriptor schema )
+    {
+        try
+        {
+            return indexingService.getIndexId( schema );
+        }
+        catch ( IndexNotFoundKernelException e )
+        {
+            return NOT_EXISTING_INDEX_ID;
+        }
     }
 
     private static Map<String,String> indexProviderDescriptorMap( IndexReference indexReference )
@@ -860,16 +897,21 @@ public class BuiltInProcedures
         public final String type;
         public final Double progress;
         public final Map<String,String> provider;
+        public final long id;
+        public final String failureMessage;
 
-        private IndexResult( String description,
+        private IndexResult( long id,
+                             String description,
                              String indexName,
                              List<String> tokenNames,
                              List<String> properties,
                              String state,
                              String type,
                              Float progress,
-                             Map<String,String> provider )
+                             Map<String,String> provider,
+                             String failureMessage )
         {
+            this.id = id;
             this.description = description;
             this.indexName = indexName;
             this.tokenNames = tokenNames;
@@ -878,6 +920,7 @@ public class BuiltInProcedures
             this.type = type;
             this.progress = progress.doubleValue();
             this.provider = provider;
+            this.failureMessage = failureMessage;
         }
     }
 

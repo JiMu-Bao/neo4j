@@ -36,7 +36,7 @@ InModuleScope Neo4j-Management {
     Mock Get-ItemProperty { $null } -ParameterFilter {
       $Path -like 'Registry::*\JavaSoft\Java Runtime Environment*'
     }
-    Mock Confirm-JavaVersion { $true }
+    Mock Get-JavaVersion { @{ 'isValid' = $true; 'isJava8' = $true } }
 
     # Java Detection Tests
     Context "Valid Java install in JAVA_HOME environment variable" {
@@ -52,7 +52,7 @@ InModuleScope Neo4j-Management {
     }
 
     Context "Legacy Java install in JAVA_HOME environment variable" {
-      Mock Confirm-JavaVersion -Verifiable { $false }
+      Mock Get-JavaVersion -Verifiable { @{ 'isValid' = $false; 'isJava8' = $false } }
 
       It "should throw if java is not supported" {
         { Get-Java -ErrorAction Stop } | Should Throw
@@ -219,6 +219,10 @@ InModuleScope Neo4j-Management {
         $resultArgs | Should Match ([regex]::Escape(' -Xloggc:'))
       }
 
+      It "should set GCLogfile under logs" {
+        $resultArgs | Should Match ([regex]::Escape(" -Xloggc:`"$($serverObject.LogDir)"))
+      }
+
       It "should set GCLogFileSize" {
         $resultArgs | Should Match ([regex]::Escape(' -XX:GCLogFileSize='))
       }
@@ -273,6 +277,59 @@ InModuleScope Neo4j-Management {
       }
     }
 
+    Context "Server Invoke - Enable Post Java 8 Default GC Logs" {
+      Mock Get-JavaVersion { @{ 'isValid' = $true; 'isJava8' = $false } }
+      
+      $serverObject = global:New-MockNeo4jInstall -ServerVersion '3.0' -ServerType 'Community' `
+         -NeoConfSettings 'dbms.logs.gc.enabled=true'
+
+      $result = Get-Java -ForServer -Neo4jServer $serverObject
+      $resultArgs = ($result.args -join ' ')
+
+      It "should set default options" {
+        $resultArgs | Should Match ([regex]::Escape('-Xlog:gc*,safepoint,age*=trace'))
+      }
+
+      It "should set gc log file size" {
+        $resultArgs | Should Match ([regex]::Escape('filesize='))
+      }
+
+      It "should set number of gc logs" {
+        $resultArgs | Should Match ([regex]::Escape('filecount='))
+      }
+
+      It "should set file location" {
+        $resultArgs | Should Match ([regex]::Escape('file='))
+      }
+    }
+
+    Context "Server Invoke - Enable Post Java 8 Specific GC Logs" {
+      Mock Get-JavaVersion { @{ 'isValid' = $true; 'isJava8' = $false } }
+
+      $serverObject = global:New-MockNeo4jInstall -ServerVersion '3.0' -ServerType 'Community' `
+         -NeoConfSettings 'dbms.logs.gc.enabled=true','dbms.logs.gc.options=key1=value1 key2=value2'
+
+      $result = Get-Java -ForServer -Neo4jServer $serverObject
+      $resultArgs = ($result.args -join ' ')
+
+      It "should set gc file" {
+        $resultArgs | Should Match ([regex]::Escape('file='))
+      }
+
+      It "should set gc log file size" {
+        $resultArgs | Should Match ([regex]::Escape('filesize='))
+      }
+
+      It "should set number of gc log files" {
+        $resultArgs | Should Match ([regex]::Escape('filecount='))
+      }
+
+      It "should set specific options" {
+        $resultArgs | Should Match ([regex]::Escape(' key1=value1'))
+        $resultArgs | Should Match ([regex]::Escape(' key2=value2'))
+      }
+    }
+
     # Utility Invoke
     Context "Utility Invoke" {
       $serverObject = global:New-MockNeo4jInstall -ServerVersion '99.99' -ServerType 'Community'
@@ -281,10 +338,10 @@ InModuleScope Neo4j-Management {
       $resultArgs = ($result.args -join ' ')
 
       It "should have jars from bin" {
-        $resultArgs | Should Match ([regex]::Escape('bin1.jar"'))
+        $resultArgs | Should Match ([regex]::Escape("$($serverObject.Home)/bin/*"))
       }
       It "should have jars from lib" {
-        $resultArgs | Should Match ([regex]::Escape('lib1.jar"'))
+        $resultArgs | Should Match ([regex]::Escape("$($serverObject.Home)/lib/*"))
       }
       It "should have correct Starting Class" {
         $resultArgs | Should Match ([regex]::Escape(' someclass'))
@@ -299,10 +356,10 @@ InModuleScope Neo4j-Management {
       $resultArgs = ($result.args -join ' ')
 
       It "should have jars from bin" {
-        $resultArgs | Should Match ([regex]::Escape('bin1.jar"'))
+        $resultArgs | Should Match ([regex]::Escape("$($serverObject.Home)/bin/*"))
       }
       It "should have jars from lib" {
-        $resultArgs | Should Match ([regex]::Escape('lib1.jar"'))
+        $resultArgs | Should Match ([regex]::Escape("$($serverObject.Home)/lib/*"))
       }
       It "should have correct Starting Class" {
         $resultArgs | Should Match ([regex]::Escape(' someclass'))
@@ -312,6 +369,17 @@ InModuleScope Neo4j-Management {
       }
       It "should have correct maximum heap" {
         $resultArgs | Should Match ([regex]::Escape('-Xmx666m'))
+      }
+    }
+
+    Context "Utility Invoke - Should provide parallel collector option" {
+      $serverObject = global:New-MockNeo4jInstall -ServerVersion '99.99' -ServerType 'Community'
+
+      $result = Get-Java -ForUtility -StartingClass 'someclass' -Neo4jServer $serverObject -ErrorAction Stop
+      $resultArgs = ($result.args -join ' ')
+
+      It "should have parallel collector java option" {
+        $resultArgs | Should Match ([regex]::Escape('-XX:+UseParallelGC'))
       }
     }
 
@@ -330,7 +398,7 @@ InModuleScope Neo4j-Management {
         $argList -contains "--home-dir=`"TestDrive:\Neo4j Home`"" | Should Be True
       }
       It "should have literal quotes around gclog path" {
-        $argList -contains "-Xloggc:`"TestDrive:\Neo4j Home/gc.log`"" | Should Be True
+        $argList -contains "-Xloggc:`"$($serverObject.LogDir)/gc.log`"" | Should Be True
       }
     }
   }

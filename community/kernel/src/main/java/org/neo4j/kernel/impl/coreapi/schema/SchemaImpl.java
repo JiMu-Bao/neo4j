@@ -24,6 +24,8 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -82,12 +84,14 @@ import static org.neo4j.graphdb.RelationshipType.withName;
 import static org.neo4j.graphdb.schema.Schema.IndexState.FAILED;
 import static org.neo4j.graphdb.schema.Schema.IndexState.ONLINE;
 import static org.neo4j.graphdb.schema.Schema.IndexState.POPULATING;
+import static org.neo4j.helpers.collection.Iterables.single;
 import static org.neo4j.helpers.collection.Iterators.addToCollection;
 import static org.neo4j.helpers.collection.Iterators.asCollection;
 import static org.neo4j.helpers.collection.Iterators.map;
 import static org.neo4j.kernel.api.schema.SchemaDescriptorFactory.forLabel;
 import static org.neo4j.kernel.api.schema.SchemaDescriptorFactory.forRelType;
 import static org.neo4j.kernel.api.schema.SchemaDescriptorFactory.multiToken;
+import static org.neo4j.kernel.impl.coreapi.schema.IndexDefinitionImpl.labelNameList;
 import static org.neo4j.kernel.impl.coreapi.schema.PropertyNameUtils.getOrCreatePropertyKeyIds;
 
 public class SchemaImpl implements Schema
@@ -204,7 +208,8 @@ public class SchemaImpl implements Schema
                     Thread.sleep( 100 );
                 }
                 catch ( InterruptedException e )
-                {   // What to do?
+                {
+                    // Ignore interrupted exceptions here.
                 }
                 break;
             }
@@ -236,6 +241,32 @@ public class SchemaImpl implements Schema
 
             onlineIndexes.add( index );
         }
+    }
+
+    @Override
+    public IndexDefinition getIndexByName( String indexName )
+    {
+        Objects.requireNonNull( indexName );
+        Iterator<IndexDefinition> indexes = getIndexes().iterator();
+        IndexDefinition index = null;
+        while ( indexes.hasNext() )
+        {
+            IndexDefinition candidate = indexes.next();
+            if ( candidate.getName().equals( indexName ) )
+            {
+                if ( index != null )
+                {
+                    throw new IllegalStateException( "Multiple indexes found by the name '" + indexName + "'. " +
+                            "Try iterating Schema#getIndexes() and filter by name instead." );
+                }
+                index = candidate;
+            }
+        }
+        if ( index == null )
+        {
+            throw new IllegalArgumentException( "No index found with the name '" + indexName + "'." );
+        }
+        return index;
     }
 
     @Override
@@ -464,7 +495,7 @@ public class SchemaImpl implements Schema
             Label[] labels = new Label[entityTokenIds.length];
             for ( int i = 0; i < entityTokenIds.length; i++ )
             {
-                labels[i] = Label.label( lookup.labelGetName( entityTokenIds[i] ) );
+                labels[i] = label( lookup.labelGetName( entityTokenIds[i] ) );
             }
             String[] propertyKeys = Arrays.stream( schemaDescriptor.getPropertyIds() ).mapToObj( lookup::propertyKeyGetName ).toArray( String[]::new );
             if ( constraint instanceof NodeExistenceConstraintDescriptor )
@@ -511,7 +542,7 @@ public class SchemaImpl implements Schema
         }
 
         @Override
-        public IndexDefinition createIndexDefinition( Label label, String... propertyKeys )
+        public IndexDefinition createIndexDefinition( Label label, Optional<String> indexName, String... propertyKeys )
         {
             KernelTransaction transaction = safeAcquireTransaction( transactionSupplier );
 
@@ -519,13 +550,12 @@ public class SchemaImpl implements Schema
             {
                 try
                 {
-                    IndexDefinition indexDefinition = new IndexDefinitionImpl( this, null, new Label[]{label}, propertyKeys, false );
                     TokenWrite tokenWrite = transaction.tokenWrite();
-                    int labelId = tokenWrite.labelGetOrCreateForName( indexDefinition.getLabel().name() );
-                    int[] propertyKeyIds = getOrCreatePropertyKeyIds( tokenWrite, indexDefinition );
+                    int labelId = tokenWrite.labelGetOrCreateForName( label.name() );
+                    int[] propertyKeyIds = getOrCreatePropertyKeyIds( tokenWrite, propertyKeys );
                     LabelSchemaDescriptor descriptor = forLabel( labelId, propertyKeyIds );
-                    transaction.schemaWrite().indexCreate( descriptor );
-                    return indexDefinition;
+                    IndexReference indexReference = transaction.schemaWrite().indexCreate( descriptor, indexName );
+                    return new IndexDefinitionImpl( this, indexReference, new Label[]{label}, propertyKeys, false );
                 }
 
                 catch ( IllegalTokenNameException e )
@@ -570,13 +600,19 @@ public class SchemaImpl implements Schema
         @Override
         public ConstraintDefinition createPropertyUniquenessConstraint( IndexDefinition indexDefinition )
         {
+            if ( indexDefinition.isMultiTokenIndex() )
+            {
+                throw new ConstraintViolationException( "A property uniqueness constraint does not support multi-token index definitions. " +
+                        "That is, only a single label is supported, but the following labels were provided: " +
+                        labelNameList( indexDefinition.getLabels(), "", "." ) );
+            }
             KernelTransaction transaction = safeAcquireTransaction( transactionSupplier );
             try ( Statement ignore = transaction.acquireStatement() )
             {
                 try
                 {
                     TokenWrite tokenWrite = transaction.tokenWrite();
-                    int labelId = tokenWrite.labelGetOrCreateForName( indexDefinition.getLabel().name() );
+                    int labelId = tokenWrite.labelGetOrCreateForName( single( indexDefinition.getLabels() ).name() );
                     int[] propertyKeyIds = getOrCreatePropertyKeyIds( tokenWrite, indexDefinition );
                     transaction.schemaWrite().uniquePropertyConstraintCreate(
                             forLabel( labelId, propertyKeyIds ) );
@@ -606,13 +642,19 @@ public class SchemaImpl implements Schema
         @Override
         public ConstraintDefinition createNodeKeyConstraint( IndexDefinition indexDefinition )
         {
+            if ( indexDefinition.isMultiTokenIndex() )
+            {
+                throw new ConstraintViolationException( "A node key constraint does not support multi-token index definitions. " +
+                        "That is, only a single label is supported, but the following labels were provided: " +
+                        labelNameList( indexDefinition.getLabels(), "", "." ) );
+            }
             KernelTransaction transaction = safeAcquireTransaction( transactionSupplier );
             try ( Statement ignore = transaction.acquireStatement() )
             {
                 try
                 {
                     TokenWrite tokenWrite = transaction.tokenWrite();
-                    int labelId = tokenWrite.labelGetOrCreateForName( indexDefinition.getLabel().name() );
+                    int labelId = tokenWrite.labelGetOrCreateForName( single( indexDefinition.getLabels() ).name() );
                     int[] propertyKeyIds = getOrCreatePropertyKeyIds( tokenWrite, indexDefinition );
                     transaction.schemaWrite().nodeKeyConstraintCreate(
                             forLabel( labelId, propertyKeyIds ) );

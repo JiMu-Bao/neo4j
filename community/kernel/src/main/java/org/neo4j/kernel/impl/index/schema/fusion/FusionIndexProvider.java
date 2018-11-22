@@ -19,7 +19,6 @@
  */
 package org.neo4j.kernel.impl.index.schema.fusion;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.EnumMap;
@@ -31,9 +30,7 @@ import org.neo4j.internal.kernel.api.IndexCapability;
 import org.neo4j.internal.kernel.api.IndexOrder;
 import org.neo4j.internal.kernel.api.InternalIndexState;
 import org.neo4j.internal.kernel.api.schema.IndexProviderDescriptor;
-import org.neo4j.io.compress.ZipUtils;
 import org.neo4j.io.fs.FileSystemAbstraction;
-import org.neo4j.io.fs.FileUtils;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.api.index.IndexAccessor;
 import org.neo4j.kernel.api.index.IndexDirectoryStructure;
@@ -47,6 +44,7 @@ import org.neo4j.values.storable.ValueCategory;
 
 import static org.neo4j.internal.kernel.api.InternalIndexState.FAILED;
 import static org.neo4j.internal.kernel.api.InternalIndexState.POPULATING;
+import static org.neo4j.kernel.impl.index.schema.NativeIndexes.deleteIndex;
 import static org.neo4j.kernel.impl.index.schema.fusion.IndexSlot.LUCENE;
 import static org.neo4j.kernel.impl.index.schema.fusion.IndexSlot.NUMBER;
 import static org.neo4j.kernel.impl.index.schema.fusion.IndexSlot.SPATIAL;
@@ -73,12 +71,11 @@ public class FusionIndexProvider extends IndexProvider
             IndexProvider luceneProvider,
             SlotSelector slotSelector,
             IndexProviderDescriptor descriptor,
-            int priority,
             IndexDirectoryStructure.Factory directoryStructure,
             FileSystemAbstraction fs,
             boolean archiveFailedIndex )
     {
-        super( descriptor, priority, directoryStructure );
+        super( descriptor, directoryStructure );
         this.archiveFailedIndex = archiveFailedIndex;
         this.slotSelector = slotSelector;
         this.providers = new InstanceSelector<>();
@@ -160,9 +157,9 @@ public class FusionIndexProvider extends IndexProvider
     }
 
     @Override
-    public IndexCapability getCapability()
+    public IndexCapability getCapability( StoreIndexDescriptor descriptor )
     {
-        Iterable<IndexCapability> capabilities = providers.transform( IndexProvider::getCapability );
+        Iterable<IndexCapability> capabilities = providers.transform( indexProvider -> indexProvider.getCapability( descriptor ) );
         return new UnionIndexCapability( capabilities )
         {
             @Override
@@ -225,22 +222,12 @@ public class FusionIndexProvider extends IndexProvider
         {
             try
             {
-                File rootIndexDirectory = directoryStructure.directoryForIndex( indexId );
-                if ( archiveExistentIndex && !FileUtils.isEmptyDirectory( rootIndexDirectory ) )
-                {
-                    ZipUtils.zip( fs, rootIndexDirectory, archiveFile( rootIndexDirectory ) );
-                }
-                fs.deleteRecursively( rootIndexDirectory );
+                deleteIndex( fs, directoryStructure, indexId, archiveExistentIndex );
             }
             catch ( IOException e )
             {
                 throw new UncheckedIOException( e );
             }
-        }
-
-        private File archiveFile( File folder )
-        {
-            return new File( folder.getParent(), "archive-" + folder.getName() + "-" + System.currentTimeMillis() + ".zip" );
         }
     }
 }

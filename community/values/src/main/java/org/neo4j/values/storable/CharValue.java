@@ -41,7 +41,7 @@ public final class CharValue extends TextValue
     @Override
     public boolean eq( Object other )
     {
-        return other != null && other instanceof Value && equals( (Value) other );
+        return other instanceof Value && equals( (Value) other );
     }
 
     @Override
@@ -116,7 +116,7 @@ public final class CharValue extends TextValue
     {
         if ( length != 1 && start != 0 )
         {
-            return StringValue.EMTPY;
+            return StringValue.EMPTY;
         }
 
         return this;
@@ -127,7 +127,7 @@ public final class CharValue extends TextValue
     {
         if ( Character.isWhitespace( value ) )
         {
-            return StringValue.EMTPY;
+            return StringValue.EMPTY;
         }
         else
         {
@@ -197,6 +197,24 @@ public final class CharValue extends TextValue
     public TextValue plus( TextValue other )
     {
         return Values.stringValue( value + other.stringValue() );
+    }
+
+    @Override
+    public boolean startsWith( TextValue other )
+    {
+        return other.length() == 1 && other.stringValue().charAt( 0 ) == value;
+    }
+
+    @Override
+    public boolean endsWith( TextValue other )
+    {
+        return startsWith( other );
+    }
+
+    @Override
+    public boolean contains( TextValue other )
+    {
+        return startsWith( other );
     }
 
     public char value()

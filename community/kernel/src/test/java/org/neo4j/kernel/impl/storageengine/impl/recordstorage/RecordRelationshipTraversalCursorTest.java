@@ -26,10 +26,10 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
-import java.io.File;
 import java.util.Arrays;
 
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.store.NeoStores;
@@ -64,7 +64,7 @@ public class RecordRelationshipTraversalCursorTest
     private static final int TYPE = 0;
 
     @Rule
-    public final PageCacheAndDependenciesRule storage = new PageCacheAndDependenciesRule( DefaultFileSystemRule::new, getClass() );
+    public final PageCacheAndDependenciesRule storage = new PageCacheAndDependenciesRule().with( new DefaultFileSystemRule() );
 
     private NeoStores neoStores;
 
@@ -89,18 +89,18 @@ public class RecordRelationshipTraversalCursorTest
     @Before
     public void setupStores()
     {
-        File storeDir = storage.directory().absolutePath();
+        DatabaseLayout storeLayout = storage.directory().databaseLayout();
         Config config = Config.defaults( pagecache_memory, "8m" );
         PageCache pageCache = storage.pageCache();
         FileSystemAbstraction fs = storage.fileSystem();
         DefaultIdGeneratorFactory idGeneratorFactory = new DefaultIdGeneratorFactory( fs );
         NullLogProvider logProvider = NullLogProvider.getInstance();
-        StoreFactory storeFactory = new StoreFactory( storeDir, config, idGeneratorFactory, pageCache, fs, logProvider, EMPTY );
+        StoreFactory storeFactory = new StoreFactory( storeLayout, config, idGeneratorFactory, pageCache, fs, logProvider, EMPTY );
         neoStores = storeFactory.openAllNeoStores( true );
     }
 
     @After
-    public void shutDownStores() throws Exception
+    public void shutDownStores()
     {
         neoStores.close();
     }
@@ -133,7 +133,7 @@ public class RecordRelationshipTraversalCursorTest
             cursor.init( FIRST_OWNING_NODE, 1 );
             while ( cursor.next() )
             {
-                assertEquals( "Should load next relationship in a sequence", expectedNodeId++, cursor.relationshipReference() );
+                assertEquals( "Should load next relationship in a sequence", expectedNodeId++, cursor.entityReference() );
             }
         }
     }
@@ -152,7 +152,7 @@ public class RecordRelationshipTraversalCursorTest
             while ( cursor.next() )
             {
                 assertEquals( "Should load next relationship in a sequence",
-                        expectedRelationshipIds[relationshipIndex++], cursor.relationshipReference() );
+                        expectedRelationshipIds[relationshipIndex++], cursor.entityReference() );
             }
         }
     }

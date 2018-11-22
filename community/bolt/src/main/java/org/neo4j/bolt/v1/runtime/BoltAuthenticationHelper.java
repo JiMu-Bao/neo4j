@@ -22,7 +22,7 @@ package org.neo4j.bolt.v1.runtime;
 import java.util.Map;
 
 import org.neo4j.bolt.runtime.BoltConnectionFatality;
-import org.neo4j.bolt.runtime.BoltQuerySource;
+import org.neo4j.bolt.runtime.BoltStateMachineSPI;
 import org.neo4j.bolt.runtime.StateMachineContext;
 import org.neo4j.bolt.runtime.StatementProcessor;
 import org.neo4j.bolt.security.auth.AuthenticationResult;
@@ -34,19 +34,21 @@ public class BoltAuthenticationHelper
     {
         try
         {
-            AuthenticationResult authResult = context.boltSpi().authenticate( authToken );
-            String username = authResult.getLoginContext().subject().username();
-            context.authenticatedAsUser( username );
+            BoltStateMachineSPI boltSpi = context.boltSpi();
 
-            StatementProcessor statementProcessor = newStatementProcessor( username, userAgent, authResult, context );
+            AuthenticationResult authResult = boltSpi.authenticate( authToken );
+            String username = authResult.getLoginContext().subject().username();
+            context.authenticatedAsUser( username, userAgent );
+
+            StatementProcessor statementProcessor = new TransactionStateMachine( boltSpi.transactionSpi(), authResult, context.clock() );
             context.connectionState().setStatementProcessor( statementProcessor );
 
             if ( authResult.credentialsExpired() )
             {
                 context.connectionState().onMetadata( "credentials_expired", Values.TRUE );
             }
-            context.connectionState().onMetadata( "server", Values.stringValue( context.boltSpi().version() ) );
-            context.boltSpi().udcRegisterClient( userAgent );
+            context.connectionState().onMetadata( "server", Values.stringValue( boltSpi.version() ) );
+            boltSpi.udcRegisterClient( userAgent );
 
             return true;
         }
@@ -55,13 +57,5 @@ public class BoltAuthenticationHelper
             context.handleFailure( t, true );
             return false;
         }
-    }
-
-    private static StatementProcessor newStatementProcessor( String username, String userAgent, AuthenticationResult authResult,
-            StateMachineContext context )
-    {
-        TransactionStateMachine statementProcessor = new TransactionStateMachine( context.boltSpi().transactionSpi(), authResult, context.clock() );
-        statementProcessor.setQuerySource( new BoltQuerySource( username, userAgent, context.boltSpi().connectionDescriptor() ) );
-        return statementProcessor;
     }
 }

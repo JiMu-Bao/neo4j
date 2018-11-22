@@ -47,7 +47,7 @@ public class ValueTuple
 
     private final Value[] values;
 
-    private ValueTuple( Value[] values )
+    protected ValueTuple( Value[] values )
     {
         this.values = values;
     }
@@ -60,6 +60,14 @@ public class ValueTuple
     public Value valueAt( int offset )
     {
         return values[offset];
+    }
+
+    /**
+     * WARNING: this method does not create a defensive copy. Do not modify the returned array.
+     */
+    public Value[] getValues()
+    {
+        return values;
     }
 
     @Override

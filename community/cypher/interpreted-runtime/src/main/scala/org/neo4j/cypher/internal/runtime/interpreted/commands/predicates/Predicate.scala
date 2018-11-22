@@ -19,16 +19,29 @@
  */
 package org.neo4j.cypher.internal.runtime.interpreted.commands.predicates
 
-import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.{Expression, Literal}
+import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.Expression
+import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.Literal
 import org.neo4j.cypher.internal.runtime.interpreted.commands.values.KeyToken
 import org.neo4j.cypher.internal.runtime.interpreted.pipes.QueryState
-import org.neo4j.cypher.internal.runtime.interpreted.{CastSupport, ExecutionContext, IsList, IsMap}
+import org.neo4j.cypher.internal.runtime.interpreted.CastSupport
+import org.neo4j.cypher.internal.runtime.interpreted.ExecutionContext
+import org.neo4j.cypher.internal.runtime.interpreted.IsList
+import org.neo4j.cypher.internal.runtime.interpreted.IsMap
+import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.AbstractCachedNodeProperty
 import org.neo4j.cypher.operations.CypherBoolean
-import org.neo4j.values.storable.{BooleanValue, TextValue, Value, Values}
-import org.neo4j.values.virtual.{VirtualNodeValue, VirtualRelationshipValue}
-import org.opencypher.v9_0.util.{CypherTypeException, NonEmptyList}
+import org.neo4j.kernel.api.StatementConstants
+import org.neo4j.values.storable.BooleanValue
+import org.neo4j.values.storable.TextValue
+import org.neo4j.values.storable.Value
+import org.neo4j.values.storable.Values
+import org.neo4j.values.virtual.VirtualNodeValue
+import org.neo4j.values.virtual.VirtualRelationshipValue
+import org.opencypher.v9_0.util.CypherTypeException
+import org.opencypher.v9_0.util.NonEmptyList
 
-import scala.util.{Failure, Success, Try}
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
 
 abstract class Predicate extends Expression {
   def apply(ctx: ExecutionContext, state: QueryState): Value =
@@ -170,35 +183,60 @@ case class PropertyExists(variable: Expression, propertyKey: KeyToken) extends P
   def symbolTableDependencies = variable.symbolTableDependencies
 }
 
+case class CachedNodePropertyExists(cachedNodeProperty: Expression) extends Predicate {
+  def isMatch(m: ExecutionContext, state: QueryState): Option[Boolean] = {
+    cachedNodeProperty match {
+      case cnp: AbstractCachedNodeProperty =>
+        val nodeId = cnp.getNodeId(m)
+        if (nodeId == StatementConstants.NO_SUCH_NODE) {
+          None
+        } else {
+          Some(state.query.nodeOps.hasTxStatePropertyForCachedNodeProperty(nodeId, cnp.getPropertyKey(state.query)))
+        }
+      case _ => throw new CypherTypeException("Expected " + cachedNodeProperty + " to be a cached node property.")
+    }
+  }
+
+  override def toString: String = s"hasCachedNodeProp($cachedNodeProperty)"
+
+  def containsIsNull = false
+
+  def rewrite(f: Expression => Expression) = f(CachedNodePropertyExists(cachedNodeProperty.rewrite(f)))
+
+  def arguments = Seq(cachedNodeProperty)
+
+  def symbolTableDependencies: Set[String] = cachedNodeProperty.symbolTableDependencies
+}
+
 trait StringOperator {
   self: Predicate =>
   override def isMatch(m: ExecutionContext, state: QueryState) = (lhs(m, state), rhs(m, state)) match {
-    case (l: TextValue, r: TextValue) => Some(compare(l.stringValue(), r.stringValue()))
+    case (l: TextValue, r: TextValue) => Some(compare(l, r))
     case (_, _) => None
   }
 
   def lhs: Expression
   def rhs: Expression
-  def compare(a: String, b: String): Boolean
+  def compare(a: TextValue, b: TextValue): Boolean
   override def containsIsNull = false
   override def arguments = Seq(lhs, rhs)
   override def symbolTableDependencies = lhs.symbolTableDependencies ++ rhs.symbolTableDependencies
 }
 
 case class StartsWith(lhs: Expression, rhs: Expression) extends Predicate with StringOperator {
-  override def compare(a: String, b: String) = a.startsWith(b)
+  override def compare(a: TextValue, b: TextValue) = a.startsWith(b)
 
   override def rewrite(f: (Expression) => Expression) = f(copy(lhs.rewrite(f), rhs.rewrite(f)))
 }
 
 case class EndsWith(lhs: Expression, rhs: Expression) extends Predicate with StringOperator {
-  override def compare(a: String, b: String) = a.endsWith(b)
+  override def compare(a: TextValue, b: TextValue) = a.endsWith(b)
 
   override def rewrite(f: (Expression) => Expression) = f(copy(lhs.rewrite(f), rhs.rewrite(f)))
 }
 
 case class Contains(lhs: Expression, rhs: Expression) extends Predicate with StringOperator {
-  override def compare(a: String, b: String) = a.contains(b)
+  override def compare(a: TextValue, b: TextValue) = a.contains(b)
 
   override def rewrite(f: (Expression) => Expression) = f(copy(lhs.rewrite(f), rhs.rewrite(f)))
 }
@@ -233,11 +271,10 @@ case class RegularExpression(lhsExpr: Expression, regexExpr: Expression)
     val lValue = lhsExpr(m, state)
     val rValue = regexExpr(m, state)
     (lValue, rValue) match {
-      case (lhs, rhs) if rhs == Values.NO_VALUE || lhs == Values.NO_VALUE => None
-      case (lhs, rhs) => CypherBoolean.regex(lhs, rhs) match {
-        case b: BooleanValue => Some(b.booleanValue())
-        case _ => None
-      }
+      case (lhs: TextValue, rhs) if rhs != Values.NO_VALUE =>
+        val rhsAsRegexString = converter(CastSupport.castOrFail[TextValue](rhs))
+        Some(CypherBoolean.regex(lhs, rhsAsRegexString).booleanValue())
+      case _ => None
     }
   }
 

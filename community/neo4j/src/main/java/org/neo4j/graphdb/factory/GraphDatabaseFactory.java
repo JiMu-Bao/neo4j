@@ -25,9 +25,10 @@ import javax.annotation.Nonnull;
 
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.facade.GraphDatabaseFacadeFactory;
-import org.neo4j.graphdb.factory.module.CommunityEditionModule;
+import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule;
 import org.neo4j.graphdb.security.URLAccessRule;
 import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.configuration.Settings;
 import org.neo4j.kernel.impl.factory.DatabaseInfo;
 import org.neo4j.kernel.impl.factory.Edition;
 import org.neo4j.kernel.monitoring.Monitors;
@@ -72,10 +73,7 @@ public class GraphDatabaseFactory
 
     /**
      * @param storeDir desired embedded database store dir
-     * @deprecated Currently {@code storeDir} points to a directory where the particular database is located.
-     * That is a subject to change in a future major release.
      */
-    @Deprecated
     public GraphDatabaseService newEmbeddedDatabase( File storeDir )
     {
         return newEmbeddedDatabaseBuilder( storeDir ).newGraphDatabase();
@@ -83,10 +81,7 @@ public class GraphDatabaseFactory
 
     /**
      * @param storeDir desired embedded database store dir
-     * @deprecated Currently {@code storeDir} points to a directory where the particular database is located.
-     * That is a subject to change in a future major release.
      */
-    @Deprecated
     public GraphDatabaseBuilder newEmbeddedDatabaseBuilder( File storeDir )
     {
         final GraphDatabaseFactoryState state = getStateCopy();
@@ -101,18 +96,9 @@ public class GraphDatabaseFactory
         return new GraphDatabaseBuilder( creator );
     }
 
-    protected GraphDatabaseBuilder.DatabaseCreator createDatabaseCreator(
-            final File storeDir, final GraphDatabaseFactoryState state )
+    protected GraphDatabaseBuilder.DatabaseCreator createDatabaseCreator( final File storeDir, final GraphDatabaseFactoryState state )
     {
-        return new GraphDatabaseBuilder.DatabaseCreator()
-        {
-            @Override
-            public GraphDatabaseService newDatabase( @Nonnull Config config )
-            {
-                config.augment( GraphDatabaseSettings.ephemeral, "false" );
-                return GraphDatabaseFactory.this.newEmbeddedDatabase( storeDir, config, state.databaseDependencies() );
-            }
-        };
+        return new EmbeddedDatabaseCreator( storeDir, state );
     }
 
     protected void configure( GraphDatabaseBuilder builder )
@@ -139,8 +125,17 @@ public class GraphDatabaseFactory
     protected GraphDatabaseService newDatabase( File storeDir, Config config,
                                                 GraphDatabaseFacadeFactory.Dependencies dependencies )
     {
-        return new GraphDatabaseFacadeFactory( DatabaseInfo.COMMUNITY, CommunityEditionModule::new )
-                .newFacade( storeDir, config, dependencies );
+        File absoluteStoreDir = storeDir.getAbsoluteFile();
+        File databasesRoot = absoluteStoreDir.getParentFile();
+        config.augment( GraphDatabaseSettings.ephemeral, Settings.FALSE );
+        config.augment( GraphDatabaseSettings.active_database, absoluteStoreDir.getName() );
+        config.augment( GraphDatabaseSettings.databases_root_path, databasesRoot.getAbsolutePath() );
+        return getGraphDatabaseFacadeFactory().newFacade( databasesRoot, config, dependencies );
+    }
+
+    protected GraphDatabaseFacadeFactory getGraphDatabaseFacadeFactory()
+    {
+        return new GraphDatabaseFacadeFactory( DatabaseInfo.COMMUNITY, CommunityEditionModule::new );
     }
 
     public GraphDatabaseFactory addURLAccessRule( String protocol, URLAccessRule rule )
@@ -164,5 +159,23 @@ public class GraphDatabaseFactory
     public String getEdition()
     {
         return Edition.community.toString();
+    }
+
+    private class EmbeddedDatabaseCreator implements GraphDatabaseBuilder.DatabaseCreator
+    {
+        private final File storeDir;
+        private final GraphDatabaseFactoryState state;
+
+        EmbeddedDatabaseCreator( File storeDir, GraphDatabaseFactoryState state )
+        {
+            this.storeDir = storeDir;
+            this.state = state;
+        }
+
+        @Override
+        public GraphDatabaseService newDatabase( @Nonnull Config config )
+        {
+            return newEmbeddedDatabase( storeDir, config, state.databaseDependencies() );
+        }
     }
 }

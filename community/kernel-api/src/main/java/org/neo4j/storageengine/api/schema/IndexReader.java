@@ -35,10 +35,11 @@ public interface IndexReader extends Resource
 {
     /**
      * @param nodeId node id to match.
+     * @param propertyKeyIds the property key ids that correspond to each of the property values.
      * @param propertyValues property values to match.
      * @return number of index entries for the given {@code nodeId} and {@code propertyValues}.
      */
-    long countIndexedNodes( long nodeId, Value... propertyValues );
+    long countIndexedNodes( long nodeId, int[] propertyKeyIds, Value... propertyValues );
 
     IndexSampler createSampler();
 
@@ -52,14 +53,12 @@ public interface IndexReader extends Resource
 
     /**
      * Queries the index for the given {@link IndexQuery} predicates.
-     *
-     * @param client the client which will control the progression though query results.
+     *  @param client the client which will control the progression though query results.
+     * @param needsValues if the index should fetch property values together with node ids for index queries
      * @param query the query so serve.
      */
-    void query(
-            IndexProgressor.NodeValueClient client,
-            IndexOrder indexOrder,
-            IndexQuery... query ) throws IndexNotApplicableKernelException;
+    void query( IndexProgressor.NodeValueClient client, IndexOrder indexOrder, boolean needsValues, IndexQuery... query )
+            throws IndexNotApplicableKernelException;
 
     /**
      * @param predicates query to determine whether or not index has full value precision for.
@@ -73,7 +72,7 @@ public interface IndexReader extends Resource
     {
         // Used for checking index correctness
         @Override
-        public long countIndexedNodes( long nodeId, Value... propertyValues )
+        public long countIndexedNodes( long nodeId, int[] propertyKeyIds, Value... propertyValues )
         {
             return 0;
         }
@@ -91,7 +90,7 @@ public interface IndexReader extends Resource
         }
 
         @Override
-        public void query( IndexProgressor.NodeValueClient client, IndexOrder indexOrder, IndexQuery... query )
+        public void query( IndexProgressor.NodeValueClient client, IndexOrder indexOrder, boolean needsValues, IndexQuery... query )
         {
             //do nothing
         }

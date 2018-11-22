@@ -23,9 +23,9 @@ import java.io.File;
 import java.util.Collections;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import javax.annotation.Nonnull;
 
-import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.config.Setting;
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies;
@@ -33,23 +33,25 @@ import org.neo4j.graphdb.facade.GraphDatabaseFacadeFactory;
 import org.neo4j.graphdb.factory.GraphDatabaseBuilder;
 import org.neo4j.graphdb.factory.GraphDatabaseFactory;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
-import org.neo4j.graphdb.factory.module.CommunityEditionModule;
-import org.neo4j.graphdb.factory.module.EditionModule;
 import org.neo4j.graphdb.factory.module.PlatformModule;
+import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule;
+import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule;
 import org.neo4j.graphdb.mockfs.EphemeralFileSystemAbstraction;
 import org.neo4j.graphdb.mockfs.UncloseableDelegatingFileSystemAbstraction;
 import org.neo4j.graphdb.security.URLAccessRule;
 import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.kernel.configuration.BoltConnector;
 import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.configuration.Settings;
 import org.neo4j.kernel.extension.KernelExtensionFactory;
 import org.neo4j.kernel.impl.factory.DatabaseInfo;
-import org.neo4j.kernel.impl.logging.LogService;
-import org.neo4j.kernel.impl.logging.SimpleLogService;
+import org.neo4j.kernel.impl.index.schema.AbstractIndexProviderFactory;
 import org.neo4j.kernel.internal.locker.StoreLocker;
 import org.neo4j.kernel.monitoring.Monitors;
 import org.neo4j.logging.LogProvider;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.logging.internal.LogService;
+import org.neo4j.logging.internal.SimpleLogService;
 import org.neo4j.time.SystemNanoClock;
 
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.ephemeral;
@@ -64,6 +66,8 @@ import static org.neo4j.kernel.configuration.Settings.TRUE;
  */
 public class TestGraphDatabaseFactory extends GraphDatabaseFactory
 {
+    public static final Predicate<KernelExtensionFactory<?>> INDEX_PROVIDERS_FILTER = extension -> extension instanceof AbstractIndexProviderFactory;
+
     public TestGraphDatabaseFactory()
     {
         this( NullLogProvider.getInstance() );
@@ -82,7 +86,11 @@ public class TestGraphDatabaseFactory extends GraphDatabaseFactory
 
     public GraphDatabaseService newImpermanentDatabase( File storeDir )
     {
-        return newImpermanentDatabaseBuilder( storeDir ).newGraphDatabase();
+        File absoluteDirectory = storeDir.getAbsoluteFile();
+        GraphDatabaseBuilder databaseBuilder = newImpermanentDatabaseBuilder( absoluteDirectory );
+        databaseBuilder.setConfig( GraphDatabaseSettings.active_database, absoluteDirectory.getName() );
+        databaseBuilder.setConfig( GraphDatabaseSettings.databases_root_path, absoluteDirectory.getParentFile().getAbsolutePath() );
+        return databaseBuilder.newGraphDatabase();
     }
 
     public GraphDatabaseService newImpermanentDatabase( Map<Setting<?>,String> config )
@@ -119,7 +127,6 @@ public class TestGraphDatabaseFactory extends GraphDatabaseFactory
     {
         // Reduce the default page cache memory size to 8 mega-bytes for test databases.
         builder.setConfig( GraphDatabaseSettings.pagecache_memory, "8m" );
-        builder.setConfig( GraphDatabaseSettings.shutdown_transaction_end_timeout, "1s" );
         builder.setConfig( new BoltConnector( "bolt" ).type, BOLT.name() );
         builder.setConfig( new BoltConnector( "bolt" ).enabled, "false" );
     }
@@ -195,6 +202,12 @@ public class TestGraphDatabaseFactory extends GraphDatabaseFactory
         return this;
     }
 
+    public TestGraphDatabaseFactory removeKernelExtensions( Predicate<KernelExtensionFactory<?>> filter )
+    {
+        getCurrentState().removeKernelExtensions( filter );
+        return this;
+    }
+
     @Override
     public TestGraphDatabaseFactory addURLAccessRule( String protocol, URLAccessRule rule )
     {
@@ -250,7 +263,7 @@ public class TestGraphDatabaseFactory extends GraphDatabaseFactory
         }
 
         protected TestGraphDatabaseFacadeFactory( TestGraphDatabaseFactoryState state, boolean impermanent,
-                DatabaseInfo databaseInfo, Function<PlatformModule,EditionModule> editionFactory )
+                DatabaseInfo databaseInfo, Function<PlatformModule,AbstractEditionModule> editionFactory )
         {
             super( databaseInfo, editionFactory );
             this.state = state;
@@ -265,15 +278,23 @@ public class TestGraphDatabaseFactory extends GraphDatabaseFactory
         @Override
         protected PlatformModule createPlatform( File storeDir, Config config, Dependencies dependencies )
         {
-            config.augment( GraphDatabaseSettings.database_path, new File( storeDir, DatabaseManager.DEFAULT_DATABASE_NAME ).getAbsolutePath() );
+            File absoluteStoreDir = storeDir.getAbsoluteFile();
+            File databasesRoot = absoluteStoreDir.getParentFile();
+            if ( !config.isConfigured( GraphDatabaseSettings.shutdown_transaction_end_timeout ) )
+            {
+                config.augment( GraphDatabaseSettings.shutdown_transaction_end_timeout, "0s" );
+            }
+            config.augment( GraphDatabaseSettings.ephemeral, Settings.FALSE );
+            config.augment( GraphDatabaseSettings.active_database, absoluteStoreDir.getName() );
+            config.augment( GraphDatabaseSettings.databases_root_path, databasesRoot.getAbsolutePath() );
             if ( impermanent )
             {
                 config.augment( ephemeral, TRUE );
-                return new ImpermanentTestDatabasePlatformModule( storeDir, config, dependencies, this.databaseInfo );
+                return new ImpermanentTestDatabasePlatformModule( databasesRoot, config, dependencies, this.databaseInfo );
             }
             else
             {
-                return new TestDatabasePlatformModule( storeDir, config, dependencies, this.databaseInfo );
+                return new TestDatabasePlatformModule( databasesRoot, config, dependencies, this.databaseInfo );
             }
         }
 
@@ -344,7 +365,7 @@ public class TestGraphDatabaseFactory extends GraphDatabaseFactory
             @Override
             protected StoreLocker createStoreLocker()
             {
-                return new StoreLocker( fileSystem, storeDir );
+                return new StoreLocker( fileSystem, storeLayout );
             }
         }
     }

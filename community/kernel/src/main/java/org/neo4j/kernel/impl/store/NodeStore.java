@@ -60,7 +60,8 @@ public class NodeStore extends CommonAbstractStore<NodeRecord,NoStoreHeader>
     }
 
     public NodeStore(
-            File fileName,
+            File file,
+            File idFile,
             Config config,
             IdGeneratorFactory idGeneratorFactory,
             PageCache pageCache,
@@ -69,8 +70,8 @@ public class NodeStore extends CommonAbstractStore<NodeRecord,NoStoreHeader>
             RecordFormats recordFormats,
             OpenOption... openOptions )
     {
-        super( fileName, config, IdType.NODE, idGeneratorFactory, pageCache, logProvider, TYPE_DESCRIPTOR,
-                recordFormats.node(), NO_STORE_HEADER_FORMAT, recordFormats.storeVersion(), openOptions );
+        super( file, idFile, config, IdType.NODE, idGeneratorFactory, pageCache, logProvider, TYPE_DESCRIPTOR, recordFormats.node(),
+                NO_STORE_HEADER_FORMAT, recordFormats.storeVersion(), openOptions );
         this.dynamicLabelStore = dynamicLabelStore;
     }
 

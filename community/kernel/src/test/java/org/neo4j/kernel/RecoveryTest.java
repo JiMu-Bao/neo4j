@@ -109,8 +109,8 @@ public class RecoveryTest
     @Before
     public void setUp() throws Exception
     {
-        storeDir = this.directory.directory();
-        logFiles = LogFilesBuilder.builder( storeDir, fileSystemRule.get() )
+        storeDir = directory.storeDir();
+        logFiles = LogFilesBuilder.builder( directory.databaseLayout(), fileSystemRule.get() )
                 .withLogVersionRepository( logVersionRepository )
                 .withTransactionIdStore( transactionIdStore )
                 .build();
@@ -159,7 +159,7 @@ public class RecoveryTest
             final LogEntryReader<ReadableClosablePositionAwareChannel> reader = new VersionAwareLogEntryReader<>();
             LogTailScanner tailScanner = getTailScanner( logFiles, reader );
 
-            TransactionMetadataCache metadataCache = new TransactionMetadataCache( 100 );
+            TransactionMetadataCache metadataCache = new TransactionMetadataCache();
             LogicalTransactionStore txStore = new PhysicalLogicalTransactionStore( logFiles, metadataCache, reader,
                     monitors, false );
             CorruptedLogsTruncator logPruner = new CorruptedLogsTruncator( storeDir, logFiles, fileSystemRule.get() );
@@ -258,7 +258,7 @@ public class RecoveryTest
             final LogEntryReader<ReadableClosablePositionAwareChannel> reader = new VersionAwareLogEntryReader<>();
             LogTailScanner tailScanner = getTailScanner( logFiles, reader );
 
-            TransactionMetadataCache metadataCache = new TransactionMetadataCache( 100 );
+            TransactionMetadataCache metadataCache = new TransactionMetadataCache();
             LogicalTransactionStore txStore = new PhysicalLogicalTransactionStore( logFiles, metadataCache, reader,
                     monitors, false );
             CorruptedLogsTruncator logPruner = new CorruptedLogsTruncator( storeDir, logFiles, fileSystemRule.get() );
@@ -413,7 +413,7 @@ public class RecoveryTest
             final LogEntryReader<ReadableClosablePositionAwareChannel> reader = new VersionAwareLogEntryReader<>();
             LogTailScanner tailScanner = getTailScanner( logFiles, reader );
 
-            TransactionMetadataCache metadataCache = new TransactionMetadataCache( 100 );
+            TransactionMetadataCache metadataCache = new TransactionMetadataCache();
             LogicalTransactionStore txStore = new PhysicalLogicalTransactionStore( logFiles, metadataCache, reader, monitors, false );
             CorruptedLogsTruncator logPruner = new CorruptedLogsTruncator( storeDir, logFiles, fileSystemRule.get() );
             life.add( new Recovery( new DefaultRecoveryService( storageEngine, tailScanner, transactionIdStore,

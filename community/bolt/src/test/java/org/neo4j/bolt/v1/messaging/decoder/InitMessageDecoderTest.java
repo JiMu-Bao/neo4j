@@ -21,20 +21,25 @@ package org.neo4j.bolt.v1.messaging.decoder;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import org.neo4j.bolt.messaging.Neo4jPack.Unpacker;
 import org.neo4j.bolt.messaging.RequestMessage;
 import org.neo4j.bolt.messaging.RequestMessageDecoder;
 import org.neo4j.bolt.runtime.BoltResponseHandler;
+import org.neo4j.bolt.security.auth.AuthTokenDecoderTest;
 import org.neo4j.bolt.v1.messaging.Neo4jPackV1;
 import org.neo4j.bolt.v1.messaging.request.InitMessage;
 import org.neo4j.bolt.v1.packstream.PackedInputArray;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.neo4j.bolt.v1.messaging.util.MessageMatchers.serialize;
 import static org.neo4j.helpers.collection.MapUtil.map;
+import static org.neo4j.test.AuthTokenUtil.assertAuthTokenMatches;
 
-class InitMessageDecoderTest
+class InitMessageDecoderTest extends AuthTokenDecoderTest
 {
     private final BoltResponseHandler responseHandler = mock( BoltResponseHandler.class );
     private final RequestMessageDecoder decoder = new InitMessageDecoder( responseHandler );
@@ -66,5 +71,53 @@ class InitMessageDecoderTest
 
         RequestMessage deserializedMessage = decoder.decode( unpacker );
         assertEquals( originalMessage, deserializedMessage );
+    }
+
+    @Override
+    protected void testShouldDecodeAuthToken( Map<String,Object> authToken ) throws Exception
+    {
+        Neo4jPackV1 neo4jPack = new Neo4jPackV1();
+        InitMessage originalMessage = new InitMessage( "My Driver", authToken );
+
+        PackedInputArray innput = new PackedInputArray( serialize( neo4jPack, originalMessage ) );
+        Unpacker unpacker = neo4jPack.newUnpacker( innput );
+
+        // these two steps are executed before decoding in order to select a correct decoder
+        unpacker.unpackStructHeader();
+        unpacker.unpackStructSignature();
+
+        RequestMessage deserializedMessage = decoder.decode( unpacker );
+        assertInitMessageMatches( originalMessage, deserializedMessage );
+    }
+
+    @Override
+    protected void testShouldFailToDecodeAuthToken( Map<String,Object> authToken, String expectedErrorMessage ) throws Exception
+    {
+        Neo4jPackV1 neo4jPack = new Neo4jPackV1();
+        InitMessage originalMessage = new InitMessage( "My Driver", authToken );
+
+        PackedInputArray innput = new PackedInputArray( serialize( neo4jPack, originalMessage ) );
+        Unpacker unpacker = neo4jPack.newUnpacker( innput );
+
+        // these two steps are executed before decoding in order to select a correct decoder
+        unpacker.unpackStructHeader();
+        unpacker.unpackStructSignature();
+
+        try
+        {
+            decoder.decode( unpacker );
+            fail( "Expected UnsupportedOperationException" );
+        }
+        catch ( UnsupportedOperationException e )
+        {
+            // Expected
+            assertEquals( e.getMessage(), expectedErrorMessage );
+        }
+    }
+
+    private static void assertInitMessageMatches( InitMessage expected, RequestMessage actual )
+    {
+        assertEquals( expected.userAgent(), ((InitMessage) actual).userAgent() );
+        assertAuthTokenMatches( expected.authToken(), ((InitMessage) actual).authToken() );
     }
 }

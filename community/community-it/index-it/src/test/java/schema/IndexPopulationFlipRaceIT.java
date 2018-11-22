@@ -72,7 +72,7 @@ public class IndexPopulationFlipRaceIT
     {
         try ( Transaction tx = db.beginTx() )
         {
-            db.schema().awaitIndexesOnline( 10, SECONDS );
+            db.schema().awaitIndexesOnline( 30, SECONDS );
             tx.success();
         }
     }
@@ -95,22 +95,22 @@ public class IndexPopulationFlipRaceIT
         }
     }
 
-    private String keyB( int i )
+    private static String keyB( int i )
     {
         return "key_b" + i;
     }
 
-    private Label labelB( int i )
+    private static Label labelB( int i )
     {
         return label( "Label_b" + i );
     }
 
-    private String keyA( int i )
+    private static String keyA( int i )
     {
         return "key_a" + i;
     }
 
-    private Label labelA( int i )
+    private static Label labelA( int i )
     {
         return label( "Label_a" + i );
     }
@@ -150,10 +150,10 @@ public class IndexPopulationFlipRaceIT
             {
                 long nodeAId = data.first()[j];
                 assertEquals( 1, tx.schemaRead().nodesCountIndexed(
-                        indexA, nodeAId, Values.of( nodeAId ) ) );
+                        indexA, nodeAId, keyAId, Values.of( nodeAId ) ) );
                 long nodeBId = data.other()[j];
                 assertEquals( 1, tx.schemaRead().nodesCountIndexed(
-                        indexB, nodeBId, Values.of( nodeBId ) ) );
+                        indexB, nodeBId, keyBId, Values.of( nodeBId ) ) );
             }
         }
     }

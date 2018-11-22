@@ -21,16 +21,21 @@ package org.neo4j.cypher.internal.compiler.v3_5
 
 import java.time.Clock
 
-import org.neo4j.cypher.internal.compiler.v3_5.phases.{PlannerContext, _}
+import org.neo4j.cypher.internal.compiler.v3_5.phases.PlannerContext
+import org.neo4j.cypher.internal.compiler.v3_5.phases._
 import org.neo4j.cypher.internal.compiler.v3_5.planner.logical._
 import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.debug.DebugPrinter
 import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.plans.rewriter.PlanRewriter
-import org.neo4j.cypher.internal.compiler.v3_5.planner.{CheckForUnresolvedTokens, ResolveTokens}
+import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.steps.replacePropertyLookupsWithVariables
+import org.neo4j.cypher.internal.compiler.v3_5.planner.CheckForUnresolvedTokens
+import org.neo4j.cypher.internal.compiler.v3_5.planner.ResolveTokens
 import org.neo4j.cypher.internal.ir.v3_5.UnionQuery
-import org.neo4j.cypher.internal.planner.v3_5.spi.{IDPPlannerName, PlannerNameFor}
+import org.neo4j.cypher.internal.planner.v3_5.spi.IDPPlannerName
+import org.neo4j.cypher.internal.planner.v3_5.spi.PlannerNameFor
 import org.neo4j.cypher.internal.v3_5.logical.plans.LogicalPlan
-import org.opencypher.v9_0.frontend.phases.{CompilationPhaseTracer, _}
-import org.opencypher.v9_0.rewriting.RewriterStepSequencer
+import org.opencypher.v9_0.frontend.phases.CompilationPhaseTracer
+import org.opencypher.v9_0.frontend.phases._
+import org.opencypher.v9_0.rewriting.{Deprecations, RewriterStepSequencer}
 import org.opencypher.v9_0.util.InputPosition
 
 case class CypherPlanner[Context <: PlannerContext](monitors: Monitors,
@@ -64,7 +69,7 @@ case class CypherPlanner[Context <: PlannerContext](monitors: Monitors,
     //TODO: these nulls are a short cut
     val context = contextCreation.create(tracer, notificationLogger, planContext = null, rawQueryText, debugOptions,
       offset, monitors, metricsFactory, null, config, updateStrategy, clock, logicalPlanIdGen = null, evaluator = null)
-    CompilationPhases.parsing(sequencer).transform(startState, context)
+    CompilationPhases.parsing(sequencer, deprecations = Deprecations.V2).transform(startState, context)
   }
 
   val prepareForCaching: Transformer[PlannerContext, BaseState, BaseState] =
@@ -79,10 +84,11 @@ case class CypherPlanner[Context <: PlannerContext](monitors: Monitors,
 
   val costBasedPlanning: Transformer[PlannerContext, LogicalPlanState, LogicalPlanState] =
     QueryPlanner().adds(CompilationContains[LogicalPlan]) andThen
-    PlanRewriter(sequencer) andThen
-    If((s: LogicalPlanState) => s.unionQuery.readOnly) (
-      CheckForUnresolvedTokens
-    )
+      PlanRewriter(sequencer) andThen
+      replacePropertyLookupsWithVariables andThen
+      If((s: LogicalPlanState) => s.unionQuery.readOnly)(
+        CheckForUnresolvedTokens
+      )
 
   val standardPipeline: Transformer[Context, BaseState, LogicalPlanState] =
     CompilationPhases.lateAstRewriting andThen
@@ -107,4 +113,4 @@ case class CypherPlannerConfiguration(queryCacheSize: Int,
                                       csvBufferSize: Int,
                                       nonIndexedLabelWarningThreshold: Long,
                                       planWithMinimumCardinalityEstimates: Boolean,
-                                      disableCompiledExpressions: Boolean)
+                                      lenientCreateRelationship: Boolean)

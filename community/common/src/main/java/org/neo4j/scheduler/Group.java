@@ -19,7 +19,6 @@
  */
 package org.neo4j.scheduler;
 
-import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -31,6 +30,8 @@ public enum Group
     // GENERAL DATABASE GROUPS.
     /** Thread that schedules delayed or recurring tasks. */
     TASK_SCHEDULER( "Scheduler", ExecutorServiceFactory.unschedulable() ),
+    /* Background page cache worker. */
+    PAGE_CACHE( "PageCacheWorker" ),
     /** Watch out for, and report, external manipulation of store files. */
     FILE_WATCHER( "FileWatcher" ),
     /** Monitor and report system-wide pauses, in case they lead to service interruption. */
@@ -69,9 +70,10 @@ public enum Group
     RAFT_LOG_PRUNING( "RaftLogPruning" ),
     RAFT_BATCH_HANDLER( "RaftBatchHandler" ),
     RAFT_READER_POOL_PRUNER( "RaftReaderPoolPruner" ),
-    TOPOLOGY_HEALTH( "HazelcastHealth" ),
-    TOPOLOGY_KEEP_ALIVE( "KeepAlive" ),
-    TOPOLOGY_REFRESH( "TopologyRefresh" ),
+    HZ_TOPOLOGY_HEALTH( "HazelcastHealth" ),
+    HZ_TOPOLOGY_KEEP_ALIVE( "KeepAlive" ),
+    HZ_TOPOLOGY_REFRESH( "TopologyRefresh" ),
+    AKKA_TOPOLOGY_WORKER( "AkkaTopologyWorkers", ExecutorServiceFactory.workStealing() ),
     MEMBERSHIP_WAITER( "MembershipWaiter" ),
     DOWNLOAD_SNAPSHOT( "DownloadSnapshot" ),
 
@@ -127,10 +129,5 @@ public enum Group
     public ExecutorService buildExecutorService( SchedulerThreadFactory factory )
     {
         return executorServiceFactory.build( this, factory );
-    }
-
-    public ExecutorService buildExecutorService( SchedulerThreadFactory factory, int threadCount )
-    {
-        return executorServiceFactory.build( this, factory, threadCount );
     }
 }

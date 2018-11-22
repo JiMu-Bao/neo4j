@@ -19,7 +19,7 @@
  */
 package org.neo4j.cypher.internal
 
-import org.neo4j.cypher.internal.compiler.v3_5.CypherPlannerConfiguration
+import org.neo4j.cypher.internal.compatibility.CypherCurrentCompiler
 import org.neo4j.cypher.{CypherPlannerOption, CypherRuntimeOption, CypherUpdateStrategy, CypherVersion}
 import org.neo4j.kernel.impl.util.CopyOnWriteHashMap
 
@@ -37,12 +37,11 @@ class CompilerLibrary(factory: CompilerFactory) {
   def selectCompiler(cypherVersion: CypherVersion,
                      cypherPlanner: CypherPlannerOption,
                      cypherRuntime: CypherRuntimeOption,
-                     cypherUpdateStrategy: CypherUpdateStrategy,
-                     config: CypherPlannerConfiguration): Compiler = {
+                     cypherUpdateStrategy: CypherUpdateStrategy): Compiler = {
     val key = CompilerKey(cypherVersion, cypherPlanner, cypherRuntime, cypherUpdateStrategy)
     val compiler = compilers.get(key)
     if (compiler == null) {
-      compilers.put(key, factory.createCompiler(cypherVersion, cypherPlanner, cypherRuntime, cypherUpdateStrategy, config))
+      compilers.put(key, factory.createCompiler(cypherVersion, cypherPlanner, cypherRuntime, cypherUpdateStrategy))
       compilers.get(key)
     } else compiler
   }
@@ -51,6 +50,8 @@ class CompilerLibrary(factory: CompilerFactory) {
     val numClearedEntries =
       compilers.values().collect {
         case c: CachingPlanner[_] => c.clearCaches()
+        case c: CypherCurrentCompiler[_] if c.planner.isInstanceOf[CachingPlanner[_]] =>
+          c.planner.asInstanceOf[CachingPlanner[_]].clearCaches()
       }
 
     if (numClearedEntries.nonEmpty)

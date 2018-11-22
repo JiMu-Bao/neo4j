@@ -83,7 +83,7 @@ public class MultipleIndexPopulatorTest
     private MultipleIndexPopulator multipleIndexPopulator;
 
     @Test
-    public void canceledPopulationNotAbleToCreateNewIndex() throws IOException, FlipFailedKernelException
+    public void canceledPopulationNotAbleToCreateNewIndex() throws FlipFailedKernelException
     {
         IndexPopulator populator = createIndexPopulator();
         IndexPopulation indexPopulation = addPopulator( populator, 1 );
@@ -96,7 +96,7 @@ public class MultipleIndexPopulatorTest
     }
 
     @Test
-    public void canceledPopulationNotAbleToFlip() throws IOException, FlipFailedKernelException
+    public void canceledPopulationNotAbleToFlip() throws FlipFailedKernelException
     {
         IndexPopulator populator = createIndexPopulator();
         IndexPopulation indexPopulation = addPopulator( populator, 1 );
@@ -109,7 +109,7 @@ public class MultipleIndexPopulatorTest
     }
 
     @Test
-    public void flippedPopulationAreNotCanceable() throws IOException, FlipFailedKernelException
+    public void flippedPopulationAreNotCanceable() throws FlipFailedKernelException
     {
         IndexPopulator populator = createIndexPopulator();
         IndexPopulation indexPopulation = addPopulator( populator, 1 );
@@ -122,7 +122,7 @@ public class MultipleIndexPopulatorTest
     }
 
     @Test
-    public void testMultiplePopulatorsCreation() throws Exception
+    public void testMultiplePopulatorsCreation() throws FlipFailedKernelException
     {
         IndexPopulator indexPopulator1 = createIndexPopulator();
         IndexPopulator indexPopulator2 = createIndexPopulator();
@@ -289,24 +289,7 @@ public class MultipleIndexPopulatorTest
     }
 
     @Test
-    public void closeMultipleIndexPopulator() throws FlipFailedKernelException
-    {
-        IndexPopulator indexPopulator1 = createIndexPopulator();
-        IndexPopulator indexPopulator2 = createIndexPopulator();
-
-        addPopulator( indexPopulator1, 1 );
-        addPopulator( indexPopulator2, 2 );
-
-        doThrow( getPopulatorException() ).when( indexPopulator2 ).close( true );
-
-        multipleIndexPopulator.close( true );
-
-        verify( indexPopulator1 ).close( true );
-        checkPopulatorFailure( indexPopulator2 );
-    }
-
-    @Test
-    public void testFlipAfterPopulation() throws Exception
+    public void testFlipAfterPopulation() throws FlipFailedKernelException
     {
         IndexPopulator indexPopulator1 = createIndexPopulator();
         IndexPopulator indexPopulator2 = createIndexPopulator();
@@ -463,7 +446,7 @@ public class MultipleIndexPopulatorTest
     }
 
     @Test
-    public void shouldVerifyConstraintsBeforeFlippingIfToldTo() throws IOException, IndexEntryConflictException
+    public void shouldVerifyConstraintsBeforeFlippingIfToldTo() throws IndexEntryConflictException
     {
         // given
         IndexProxyFactory indexProxyFactory = mock( IndexProxyFactory.class );

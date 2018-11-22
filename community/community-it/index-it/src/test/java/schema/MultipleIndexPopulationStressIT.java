@@ -46,10 +46,12 @@ import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.configuration.Settings;
 import org.neo4j.kernel.impl.api.index.BatchingMultipleIndexPopulator;
 import org.neo4j.kernel.impl.api.index.MultipleIndexPopulator;
-import org.neo4j.kernel.impl.logging.NullLogService;
 import org.neo4j.kernel.impl.store.format.RecordFormatSelector;
 import org.neo4j.kernel.impl.store.format.RecordFormats;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.logging.internal.NullLogService;
+import org.neo4j.scheduler.JobScheduler;
+import org.neo4j.scheduler.ThreadPoolJobScheduler;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.rule.CleanupRule;
 import org.neo4j.test.rule.RandomRule;
@@ -163,7 +165,7 @@ public class MultipleIndexPopulationStressIT
         // WHEN creating the indexes under stressful updates
         populateDbAndIndexes( nodeCount, multiThreaded );
         ConsistencyCheckService cc = new ConsistencyCheckService();
-        Result result = cc.runFullConsistencyCheck( directory.databaseDir(),
+        Result result = cc.runFullConsistencyCheck( directory.databaseLayout(),
                 Config.defaults( GraphDatabaseSettings.pagecache_memory, "8m" ),
                 NONE, NullLogProvider.getInstance(), false );
         assertTrue( result.isSuccessful() );
@@ -293,15 +295,15 @@ public class MultipleIndexPopulationStressIT
         }
     }
 
-    private void createRandomData( int count ) throws IOException
+    private void createRandomData( int count ) throws Exception
     {
         Config config = Config.defaults();
-        RecordFormats recordFormats =
-                RecordFormatSelector.selectForConfig( config, NullLogProvider.getInstance() );
-        BatchImporter importer = new ParallelBatchImporter( directory.databaseDir(), fileSystemRule.get(),
-                null, DEFAULT, NullLogService.getInstance(), ExecutionMonitors.invisible(), EMPTY, config, recordFormats, NO_MONITOR );
-        try ( RandomDataInput input = new RandomDataInput( count ) )
+        RecordFormats recordFormats = RecordFormatSelector.selectForConfig( config, NullLogProvider.getInstance() );
+        try ( RandomDataInput input = new RandomDataInput( count );
+              JobScheduler jobScheduler = new ThreadPoolJobScheduler() )
         {
+            BatchImporter importer = new ParallelBatchImporter( directory.databaseLayout(), fileSystemRule.get(), null, DEFAULT, NullLogService.getInstance(),
+                    ExecutionMonitors.invisible(), EMPTY, config, recordFormats, NO_MONITOR, jobScheduler );
             importer.doImport( input );
         }
     }
@@ -334,14 +336,14 @@ public class MultipleIndexPopulationStressIT
         @Override
         public InputIterable nodes()
         {
-            return InputIterable.replayable( () -> new RandomNodeGenerator( count, ( state, visitor, id ) -> {
+            return () -> new RandomNodeGenerator( count, ( state, visitor, id ) -> {
                 String[] keys = random.randomValues().selection( TOKENS, 1, TOKENS.length, false );
                 for ( String key : keys )
                 {
                     visitor.property( key, random.nextValueAsObject() );
                 }
                 visitor.labels( random.selection( TOKENS, 1, TOKENS.length, false ) );
-            } ) );
+            } );
         }
 
         @Override
@@ -374,6 +376,7 @@ public class MultipleIndexPopulationStressIT
             return knownEstimates( count, 0, count * TOKENS.length / 2, 0, count * TOKENS.length / 2 * Long.BYTES, 0, 0 );
         }
 
+        @Override
         public void close()
         {
             badCollector.close();

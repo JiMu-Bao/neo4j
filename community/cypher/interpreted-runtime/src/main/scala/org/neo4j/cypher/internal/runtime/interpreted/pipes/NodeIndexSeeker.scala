@@ -19,17 +19,16 @@
  */
 package org.neo4j.cypher.internal.runtime.interpreted.pipes
 
-import org.opencypher.v9_0.frontend.helpers.SeqCombiner.combine
 import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.{Expression, InequalitySeekRangeExpression, PointDistanceSeekRangeExpression, PrefixSeekRangeExpression}
 import org.neo4j.cypher.internal.runtime.interpreted.{ExecutionContext, IsList, makeValueNeoSafe}
-import org.opencypher.v9_0.util.{CypherTypeException, InternalException}
 import org.neo4j.cypher.internal.v3_5.logical.plans._
-import org.neo4j.internal.kernel.api.{IndexQuery, IndexReference}
+import org.neo4j.internal.kernel.api.{IndexQuery, IndexReference, NodeValueIndexCursor}
 import org.neo4j.values.AnyValue
 import org.neo4j.values.storable._
-import org.neo4j.values.virtual.NodeValue
+import org.opencypher.v9_0.frontend.helpers.SeqCombiner.combine
+import org.opencypher.v9_0.util.{CypherTypeException, InternalException}
 
-import collection.JavaConverters._
+import scala.collection.JavaConverters._
 
 /**
   * Mixin trait with functionality for executing logical index queries.
@@ -46,19 +45,20 @@ trait NodeIndexSeeker {
   def propertyIds: Array[Int]
 
   // index seek
-
-  protected def indexSeek(state: QueryState,
-                          indexReference: IndexReference,
-                          baseContext: ExecutionContext): Iterator[NodeValue] =
+  protected def indexSeek[RESULT <: AnyRef](state: QueryState,
+                                            indexReference: IndexReference,
+                                            needsValues: Boolean,
+                                            indexOrder: IndexOrder,
+                                            baseContext: ExecutionContext): Iterator[NodeValueIndexCursor] =
     indexMode match {
       case _: ExactSeek |
            _: SeekByRange =>
         val indexQueries = computeIndexQueries(state, baseContext)
-        indexQueries.toIterator.flatMap(query => state.query.indexSeek(indexReference, query))
+        indexQueries.toIterator.map(query => state.query.indexSeek(indexReference, needsValues, indexOrder, query))
 
       case LockingUniqueIndexSeek =>
         val indexQueries = computeExactQueries(state, baseContext)
-        indexQueries.flatMap(indexQuery => state.query.lockingUniqueIndexSeek(indexReference, indexQuery)).toIterator
+        indexQueries.map(indexQuery => state.query.lockingUniqueIndexSeek(indexReference, indexQuery)).toIterator
     }
 
   // helpers

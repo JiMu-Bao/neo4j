@@ -27,7 +27,7 @@ public class NodeValueIndexCursorNative10Test extends AbstractNodeValueIndexCurs
     public ReadTestSupport newTestSupport()
     {
         ReadTestSupport readTestSupport = new ReadTestSupport();
-        readTestSupport.addSetting( GraphDatabaseSettings.default_schema_provider, GraphDatabaseSettings.SchemaIndex.NATIVE10.providerIdentifier() );
+        readTestSupport.addSetting( GraphDatabaseSettings.default_schema_provider, GraphDatabaseSettings.SchemaIndex.NATIVE10.providerName() );
         return readTestSupport;
     }
 
@@ -44,7 +44,7 @@ public class NodeValueIndexCursorNative10Test extends AbstractNodeValueIndexCurs
     }
 
     @Override
-    protected boolean spatialRangeSupport()
+    protected boolean indexProvidesNumericValues()
     {
         return true;
     }

@@ -33,6 +33,7 @@ import org.neo4j.values.storable.Values.longValue
 import org.neo4j.values.virtual.{NodeValue, RelationshipValue}
 import org.opencypher.v9_0.ast.semantics.SemanticTable
 import org.opencypher.v9_0.expressions.PropertyKeyName
+import org.opencypher.v9_0.util.attribution.Id
 import org.opencypher.v9_0.util.test_helpers.CypherFunSuite
 import org.opencypher.v9_0.util.{DummyPosition, PropertyKeyId}
 import org.opencypher.v9_0.{expressions => ast}
@@ -62,14 +63,14 @@ class SetPropertyPipeTest extends CypherFunSuite with PipeTestSupport {
   private val emptyExpression = mock[Expression]
   when(emptyExpression.children).thenReturn(Seq.empty)
 
-  private val expressionConverter = new ExpressionConverters(CommunityExpressionConverter)
+  private val expressionConverter = new ExpressionConverters(CommunityExpressionConverter(TokenContext.EMPTY))
   private def convertExpression(astExpression: ast.Expression): Expression = {
     def resolveTokens(expr: Expression, ctx: TokenContext): Expression = expr match {
       case keyToken: KeyToken => keyToken.resolve(ctx)
       case _ => expr
     }
 
-    expressionConverter.toCommandExpression(astExpression).rewrite(resolveTokens(_, qtx))
+    expressionConverter.toCommandExpression(Id.INVALID_ID ,astExpression).rewrite(resolveTokens(_, qtx))
   }
 
   // match (n) set n.prop = n.prop + 1

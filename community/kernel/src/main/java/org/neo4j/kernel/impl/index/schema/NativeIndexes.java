@@ -24,8 +24,12 @@ import java.io.IOException;
 
 import org.neo4j.index.internal.gbptree.GBPTree;
 import org.neo4j.internal.kernel.api.InternalIndexState;
+import org.neo4j.io.compress.ZipUtils;
+import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.io.pagecache.PageCache;
+import org.neo4j.kernel.api.index.IndexDirectoryStructure;
 
+import static org.neo4j.index.internal.gbptree.GBPTree.NO_HEADER_READER;
 import static org.neo4j.kernel.impl.index.schema.NativeIndexPopulator.BYTE_FAILED;
 import static org.neo4j.kernel.impl.index.schema.NativeIndexPopulator.BYTE_ONLINE;
 import static org.neo4j.kernel.impl.index.schema.NativeIndexPopulator.BYTE_POPULATING;
@@ -37,7 +41,7 @@ public class NativeIndexes
 
     public static InternalIndexState readState( PageCache pageCache, File indexFile ) throws IOException
     {
-        NativeIndexHeaderReader headerReader = new NativeIndexHeaderReader();
+        NativeIndexHeaderReader headerReader = new NativeIndexHeaderReader( NO_HEADER_READER );
         GBPTree.readHeader( pageCache, indexFile, headerReader );
         switch ( headerReader.state )
         {
@@ -55,8 +59,33 @@ public class NativeIndexes
     static String readFailureMessage( PageCache pageCache, File indexFile )
             throws IOException
     {
-        NativeIndexHeaderReader headerReader = new NativeIndexHeaderReader();
+        NativeIndexHeaderReader headerReader = new NativeIndexHeaderReader( NO_HEADER_READER );
         GBPTree.readHeader( pageCache, indexFile, headerReader );
         return headerReader.failureMessage;
+    }
+
+    /**
+     * Deletes index folder with the specific indexId, but has the option to first archive the index if it exists.
+     * The zip archive will be placed next to the root directory for that index with a timestamp included in its name.
+     *
+     * @param fs {@link FileSystemAbstraction} this index lives in.
+     * @param directoryStructure {@link IndexDirectoryStructure} knowing the directory structure for the provider owning the index.
+     * @param indexId id of the index.
+     * @param archiveIfExists whether or not to archive the index before deleting it, if it exists.
+     * @return whether or not an archive was created.
+     * @throws IOException on I/O error.
+     */
+    public static boolean deleteIndex( FileSystemAbstraction fs, IndexDirectoryStructure directoryStructure, long indexId, boolean archiveIfExists )
+            throws IOException
+    {
+        File rootIndexDirectory = directoryStructure.directoryForIndex( indexId );
+        if ( archiveIfExists && fs.isDirectory( rootIndexDirectory ) && fs.fileExists( rootIndexDirectory ) && fs.listFiles( rootIndexDirectory ).length > 0 )
+        {
+            ZipUtils.zip( fs, rootIndexDirectory,
+                    new File( rootIndexDirectory.getParent(), "archive-" + rootIndexDirectory.getName() + "-" + System.currentTimeMillis() + ".zip" ) );
+            return true;
+        }
+        fs.deleteRecursively( rootIndexDirectory );
+        return false;
     }
 }

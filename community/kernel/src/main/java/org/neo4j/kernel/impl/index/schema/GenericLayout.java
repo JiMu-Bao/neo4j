@@ -19,114 +19,70 @@
  */
 package org.neo4j.kernel.impl.index.schema;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-
 import org.neo4j.io.pagecache.PageCursor;
-import org.neo4j.values.storable.ValueGroup;
+import org.neo4j.kernel.impl.index.schema.config.IndexSpecificSpaceFillingCurveSettingsCache;
 
-import static java.util.Comparator.comparing;
-
-class GenericLayout extends IndexLayout<CompositeGenericKey>
+class GenericLayout extends IndexLayout<GenericKey,NativeIndexValue>
 {
-    static final Comparator<Type> TYPE_COMPARATOR = comparing( t -> t.valueGroup );
     private final int numberOfSlots;
+    private final IndexSpecificSpaceFillingCurveSettingsCache spatialSettings;
 
-    // Order doesn't matter since it's each Type's ValueGroup that matters and will be used for comparison
-    enum Type
+    GenericLayout( int numberOfSlots, IndexSpecificSpaceFillingCurveSettingsCache spatialSettings )
     {
-        ZONED_DATE_TIME( ValueGroup.ZONED_DATE_TIME, (byte) 0 ),
-        LOCAL_DATE_TIME( ValueGroup.LOCAL_DATE_TIME, (byte) 1 ),
-        DATE( ValueGroup.DATE, (byte) 2 ),
-        ZONED_TIME( ValueGroup.ZONED_TIME, (byte) 3 ),
-        LOCAL_TIME( ValueGroup.LOCAL_TIME, (byte) 4 ),
-        DURATION( ValueGroup.DURATION, (byte) 5 ),
-        TEXT( ValueGroup.TEXT, (byte) 6 ),
-        BOOLEAN( ValueGroup.BOOLEAN, (byte) 7 ),
-        NUMBER( ValueGroup.NUMBER, (byte) 8 ),
-        // TODO SPATIAL
-
-        ZONED_DATE_TIME_ARRAY( ValueGroup.ZONED_DATE_TIME_ARRAY, (byte) 9 ),
-        LOCAL_DATE_TIME_ARRAY( ValueGroup.LOCAL_DATE_TIME_ARRAY, (byte) 10 ),
-        DATE_ARRAY( ValueGroup.DATE_ARRAY, (byte) 11 ),
-        ZONED_TIME_ARRAY( ValueGroup.ZONED_TIME_ARRAY, (byte) 12 ),
-        LOCAL_TIME_ARRAY( ValueGroup.LOCAL_TIME_ARRAY, (byte) 13 ),
-        DURATION_ARRAY( ValueGroup.DURATION_ARRAY, (byte) 14 ),
-        TEXT_ARRAY( ValueGroup.TEXT_ARRAY, (byte) 15 ),
-        BOOLEAN_ARRAY( ValueGroup.BOOLEAN_ARRAY, (byte) 16 ),
-        NUMBER_ARRAY( ValueGroup.NUMBER_ARRAY, (byte) 17 );
-        // TODO SPATIAL_ARRAY
-
-        private final ValueGroup valueGroup;
-        final byte typeId;
-
-        Type( ValueGroup valueGroup, byte typeId )
-        {
-            this.valueGroup = valueGroup;
-            this.typeId = typeId;
-        }
-    }
-
-    static final Type[] TYPES = Type.values();
-    static final Type[] TYPE_BY_ID = new Type[TYPES.length];
-    static final Type LOWEST_TYPE_BY_VALUE_GROUP = Collections.min( Arrays.asList( TYPES ), TYPE_COMPARATOR );
-    static final Type HIGHEST_TYPE_BY_VALUE_GROUP = Collections.max( Arrays.asList( TYPES ), TYPE_COMPARATOR );
-    static final Type[] TYPE_BY_GROUP = new Type[ValueGroup.values().length];
-    static
-    {
-        for ( Type type : TYPES )
-        {
-            TYPE_BY_ID[type.typeId] = type;
-        }
-        for ( Type type : TYPES )
-        {
-            TYPE_BY_GROUP[type.valueGroup.ordinal()] = type;
-        }
-    }
-
-    GenericLayout( int numberOfSlots )
-    {
-        super( "NSIL", 0, 1 );
+        super( "NSIL", 0, 5 );
         this.numberOfSlots = numberOfSlots;
+        this.spatialSettings = spatialSettings;
     }
 
     @Override
-    public CompositeGenericKey newKey()
+    public GenericKey newKey()
     {
-        return new CompositeGenericKey( numberOfSlots );
+        return numberOfSlots == 1
+               // An optimized version which has the GenericKeyState built-in w/o indirection
+               ? new GenericKey( spatialSettings )
+               // A version which has an indirection to GenericKeyState[]
+               : new CompositeGenericKey( numberOfSlots, spatialSettings );
     }
 
     @Override
-    public CompositeGenericKey copyKey( CompositeGenericKey key, CompositeGenericKey into )
+    public GenericKey copyKey( GenericKey key, GenericKey into )
     {
-        into.setEntityId( key.getEntityId() );
-        into.setCompareId( key.getCompareId() );
-        into.copyValuesFrom( key );
+        into.copyFrom( key );
         return into;
     }
 
     @Override
-    public int keySize( CompositeGenericKey key )
+    public int keySize( GenericKey key )
     {
         return key.size();
     }
 
     @Override
-    public void writeKey( PageCursor cursor, CompositeGenericKey key )
+    public void writeKey( PageCursor cursor, GenericKey key )
     {
-        key.write( cursor );
+        key.put( cursor );
     }
 
     @Override
-    public void readKey( PageCursor cursor, CompositeGenericKey into, int keySize )
+    public void readKey( PageCursor cursor, GenericKey into, int keySize )
     {
-        into.read( cursor, keySize );
+        into.get( cursor, keySize );
     }
 
     @Override
     public boolean fixedSize()
     {
         return false;
+    }
+
+    @Override
+    public void minimalSplitter( GenericKey left, GenericKey right, GenericKey into )
+    {
+        right.minimalSplitter( left, right, into );
+    }
+
+    IndexSpecificSpaceFillingCurveSettingsCache getSpaceFillingCurveSettings()
+    {
+        return spatialSettings;
     }
 }

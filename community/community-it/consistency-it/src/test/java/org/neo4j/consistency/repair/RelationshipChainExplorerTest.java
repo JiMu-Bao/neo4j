@@ -45,6 +45,7 @@ import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.test.rule.fs.DefaultFileSystemRule;
 
 import static org.junit.Assert.assertEquals;
+import static org.neo4j.kernel.impl.store.record.RecordLoad.FORCE;
 import static org.neo4j.kernel.impl.store.record.RecordLoad.NORMAL;
 
 public class RelationshipChainExplorerTest
@@ -109,7 +110,14 @@ public class RelationshipChainExplorerTest
 
     private static void breakTheChain( RecordStore<RelationshipRecord> relationshipStore )
     {
-        int relationshipTowardsEndOfChain = 16;
+        RelationshipRecord record = relationshipStore.getRecord( 10, relationshipStore.newRecord(), NORMAL );
+        long relationshipTowardsEndOfChain = record.getFirstNode();
+        while ( record.inUse() && !record.isFirstInFirstChain() )
+        {
+            record = relationshipStore.getRecord( relationshipTowardsEndOfChain, relationshipStore.newRecord(), FORCE );
+            relationshipTowardsEndOfChain = record.getFirstPrevRel();
+        }
+
         relationshipStore.updateRecord( new RelationshipRecord( relationshipTowardsEndOfChain, 0, 0, 0 ) );
     }
 
@@ -120,7 +128,7 @@ public class RelationshipChainExplorerTest
 
     private StoreAccess createStoreWithOneHighDegreeNodeAndSeveralDegreeTwoNodes( int nDegreeTwoNodes )
     {
-        File storeDirectory = testDirectory.storeDir();
+        File storeDirectory = testDirectory.databaseDir();
         GraphDatabaseService database = new TestGraphDatabaseFactory()
                 .newEmbeddedDatabaseBuilder( storeDirectory )
                 .setConfig( GraphDatabaseSettings.record_format, getRecordFormatName() )
@@ -148,7 +156,7 @@ public class RelationshipChainExplorerTest
         }
         database.shutdown();
         PageCache pageCache = pageCacheRule.getPageCache( fileSystemRule.get() );
-        StoreAccess storeAccess = new StoreAccess( fileSystemRule.get(), pageCache, testDirectory.databaseDir(),
+        StoreAccess storeAccess = new StoreAccess( fileSystemRule.get(), pageCache, testDirectory.databaseLayout(),
                 Config.defaults() );
         return storeAccess.initialize();
     }

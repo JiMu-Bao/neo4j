@@ -56,13 +56,14 @@ import static org.neo4j.index.internal.gbptree.ValueMergers.overwrite;
 @RunWith( Parameterized.class )
 public abstract class InternalTreeLogicTestBase<KEY,VALUE>
 {
+    protected TestLayout<KEY,VALUE> layout;
+    protected TreeNode<KEY,VALUE> node;
+
     private final int pageSize = 256;
     private PageAwareByteArrayCursor cursor;
     private PageAwareByteArrayCursor readCursor;
     private SimpleIdProvider id;
 
-    private TestLayout<KEY,VALUE> layout;
-    private TreeNode<KEY,VALUE> node;
     private ValueMerger<KEY,VALUE> adder;
     private InternalTreeLogic<KEY,VALUE> treeLogic;
     private VALUE dontCare;
@@ -1694,17 +1695,20 @@ public abstract class InternalTreeLogicTestBase<KEY,VALUE>
     {
         long currentPageId = readCursor.getCurrentPageId();
         RightmostInChain rightmost = new RightmostInChain();
+        GenerationKeeper generationTarget = new GenerationKeeper();
         for ( long child : children )
         {
             goTo( readCursor, child );
-            long leftSibling = TreeNode.leftSibling( readCursor, stableGeneration, unstableGeneration );
-            long rightSibling = TreeNode.rightSibling( readCursor, stableGeneration, unstableGeneration );
+            long leftSibling = TreeNode.leftSibling( readCursor, stableGeneration, unstableGeneration, generationTarget );
+            long leftSiblingGeneration = generationTarget.generation;
+            long rightSibling = TreeNode.rightSibling( readCursor, stableGeneration, unstableGeneration, generationTarget );
+            long rightSiblingGeneration = generationTarget.generation;
             rightmost.assertNext( readCursor,
                     TreeNode.generation( readCursor ),
                     pointer( leftSibling ),
-                    node.pointerGeneration( readCursor, leftSibling ),
+                    leftSiblingGeneration,
                     pointer( rightSibling ),
-                    node.pointerGeneration( readCursor, rightSibling ) );
+                    rightSiblingGeneration );
         }
         rightmost.assertLast();
         goTo( readCursor, currentPageId );
@@ -1862,19 +1866,18 @@ public abstract class InternalTreeLogicTestBase<KEY,VALUE>
 
     private void assertNotEqualsKey( KEY key1, KEY key2 )
     {
-        assertFalse( String.format( "expected no not equal, key1=%s, key2=%s", key1.toString(), key2.toString() ),
-                layout.compare( key1, key2 ) == 0 );
+        assertNotEquals( String.format( "expected no not equal, key1=%s, key2=%s", key1.toString(), key2.toString() ), 0, layout.compare( key1, key2 ) );
     }
 
     private void assertEqualsKey( KEY expected, KEY actual )
     {
-        assertTrue( String.format( "expected equal, expected=%s, actual=%s", expected.toString(), actual.toString() ),
-                layout.compare( expected, actual ) == 0 );
+        assertEquals( String.format( "expected equal, expected=%s, actual=%s", expected.toString(), actual.toString() ), 0,
+                layout.compare( expected, actual ) );
     }
 
     private void assertEqualsValue( VALUE expected, VALUE actual )
     {
-        assertTrue( String.format( "expected equal, expected=%s, actual=%s", expected.toString(), actual.toString() ),
-                layout.compareValue( expected, actual ) == 0 );
+        assertEquals( String.format( "expected equal, expected=%s, actual=%s", expected.toString(), actual.toString() ), 0,
+                layout.compareValue( expected, actual ) );
     }
 }

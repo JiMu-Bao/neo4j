@@ -38,11 +38,10 @@ import org.neo4j.commandline.admin.NullOutsideWorld;
 import org.neo4j.commandline.admin.OutsideWorld;
 import org.neo4j.commandline.admin.RealOutsideWorld;
 import org.neo4j.commandline.admin.Usage;
-import org.neo4j.dbms.database.DatabaseManager;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.Args;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.store.MetaDataStore;
-import org.neo4j.kernel.impl.storemigration.StoreFileType;
 import org.neo4j.test.extension.Inject;
 import org.neo4j.test.extension.SuppressOutputExtension;
 import org.neo4j.test.extension.TestDirectoryExtension;
@@ -248,7 +247,7 @@ class ImportCommandTest
                             "%n" +
                             "options:%n" +
                             "  --database=<name>%n" +
-                            "      Name of database. [default:" + DatabaseManager.DEFAULT_DATABASE_NAME + "]%n" +
+                            "      Name of database. [default:" + GraphDatabaseSettings.DEFAULT_DATABASE_NAME + "]%n" +
                             "  --additional-config=<config-file-path>%n" +
                             "      Configuration file to supply additional configuration in. [default:]%n" +
                             "  --mode=<database|csv>%n" +
@@ -319,10 +318,10 @@ class ImportCommandTest
         }
     }
 
-    private static void putStoreInDirectory( Path storeDir ) throws IOException
+    private static void putStoreInDirectory( Path databaseDirectory ) throws IOException
     {
-        Files.createDirectories( storeDir );
-        Path storeFile = storeDir.resolve( StoreFileType.STORE.augment( MetaDataStore.DEFAULT_NAME ) );
+        Files.createDirectories( databaseDirectory );
+        Path storeFile = DatabaseLayout.of( databaseDirectory.toFile() ).metadataStore().toPath();
         Files.createFile( storeFile );
     }
 

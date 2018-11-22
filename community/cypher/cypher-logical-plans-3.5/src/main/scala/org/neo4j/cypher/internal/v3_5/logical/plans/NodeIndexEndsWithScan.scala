@@ -19,8 +19,8 @@
  */
 package org.neo4j.cypher.internal.v3_5.logical.plans
 
-import org.opencypher.v9_0.util.attribution.IdGen
-import org.opencypher.v9_0.expressions.{Expression, LabelToken, PropertyKeyToken}
+import org.opencypher.v9_0.expressions._
+import org.opencypher.v9_0.util.attribution.{IdGen, SameId}
 
 /**
   * This operator does a full scan of an index, producing rows for all entries that end with a string value
@@ -30,11 +30,21 @@ import org.opencypher.v9_0.expressions.{Expression, LabelToken, PropertyKeyToken
   */
 case class NodeIndexEndsWithScan(idName: String,
                                  label: LabelToken,
-                                 propertyKey: PropertyKeyToken,
+                                 property: IndexedProperty,
                                  valueExpr: Expression,
-                                 argumentIds: Set[String])
+                                 argumentIds: Set[String],
+                                 indexOrder: IndexOrder)
                                 (implicit idGen: IdGen)
-  extends NodeLogicalLeafPlan(idGen) {
+  extends IndexLeafPlan(idGen) {
+
+  override def properties: Seq[IndexedProperty] = Seq(property)
+
+  override def cachedNodeProperties: Traversable[CachedNodeProperty] = property.maybeCachedNodeProperty(idName)
 
   val availableSymbols: Set[String] = argumentIds + idName
+
+  override def availableCachedNodeProperties: Map[Property, CachedNodeProperty] = property.asAvailablePropertyMap(idName)
+
+  override def copyWithoutGettingValues: NodeIndexEndsWithScan =
+    NodeIndexEndsWithScan(idName, label, IndexedProperty(property.propertyKeyToken, DoNotGetValue), valueExpr, argumentIds, indexOrder)(SameId(this.id))
 }

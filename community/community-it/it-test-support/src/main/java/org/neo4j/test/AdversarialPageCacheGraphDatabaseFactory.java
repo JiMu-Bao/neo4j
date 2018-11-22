@@ -28,15 +28,16 @@ import org.neo4j.graphdb.facade.GraphDatabaseFacadeFactory;
 import org.neo4j.graphdb.facade.GraphDatabaseFacadeFactory.Dependencies;
 import org.neo4j.graphdb.factory.GraphDatabaseFactory;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
-import org.neo4j.graphdb.factory.module.CommunityEditionModule;
 import org.neo4j.graphdb.factory.module.PlatformModule;
+import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule;
 import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.tracing.cursor.context.VersionContextSupplier;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.factory.DatabaseInfo;
-import org.neo4j.kernel.impl.logging.LogService;
 import org.neo4j.kernel.monitoring.tracing.Tracers;
+import org.neo4j.logging.internal.LogService;
+import org.neo4j.scheduler.JobScheduler;
 
 public class AdversarialPageCacheGraphDatabaseFactory
 {
@@ -59,8 +60,11 @@ public class AdversarialPageCacheGraphDatabaseFactory
                     @Override
                     protected PlatformModule createPlatform( File storeDir, Config config, Dependencies dependencies )
                     {
-                        config.augment( GraphDatabaseSettings.database_path, storeDir.getAbsolutePath() );
-                        return new PlatformModule( storeDir, config, databaseInfo, dependencies )
+                        File absoluteStoreDir = storeDir.getAbsoluteFile();
+                        File databasesRoot = absoluteStoreDir.getParentFile();
+                        config.augment( GraphDatabaseSettings.active_database, absoluteStoreDir.getName() );
+                        config.augment( GraphDatabaseSettings.databases_root_path, databasesRoot.getAbsolutePath() );
+                        return new PlatformModule( databasesRoot, config, databaseInfo, dependencies )
                         {
                             @Override
                             protected FileSystemAbstraction createFileSystemAbstraction()
@@ -70,10 +74,9 @@ public class AdversarialPageCacheGraphDatabaseFactory
 
                             @Override
                             protected PageCache createPageCache( FileSystemAbstraction fileSystem, Config config,
-                                    LogService logging, Tracers tracers, VersionContextSupplier versionContextSupplier )
+                                    LogService logging, Tracers tracers, VersionContextSupplier versionContextSupplier, JobScheduler jobScheduler )
                             {
-                                PageCache pageCache = super.createPageCache( fileSystem, config, logging, tracers,
-                                        versionContextSupplier );
+                                PageCache pageCache = super.createPageCache( fileSystem, config, logging, tracers, versionContextSupplier, jobScheduler );
                                 return new AdversarialPageCache( pageCache, adversary );
                             }
                         };

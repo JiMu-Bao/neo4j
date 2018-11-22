@@ -31,7 +31,7 @@ import org.neo4j.kernel.lifecycle.Lifecycle;
  * To be expanded, the idea here is to have a database-global service for running jobs, handling jobs crashing and so
  * on.
  */
-public interface JobScheduler extends Lifecycle
+public interface JobScheduler extends Lifecycle, AutoCloseable
 {
     /**
      * Assign a specific name to the top-most scheduler group.
@@ -48,6 +48,13 @@ public interface JobScheduler extends Lifecycle
      * Creates an {@link ExecutorService} that does works-stealing - read more about this in {@link ForkJoinPool}
      */
     ExecutorService workStealingExecutor( Group group, int parallelism );
+
+    /**
+     * Creates an {@link ExecutorService} that does works-stealing with asyncMode set to true - read more about this in {@link ForkJoinPool}
+     * <p>
+     * This may be more suitable for systems where worker threads only process event-style asynchronous tasks.
+     */
+    ExecutorService workStealingExecutorAsyncMode( Group group, int parallelism );
 
     /**
      * Expose a group scheduler as a {@link java.util.concurrent.ThreadFactory}.

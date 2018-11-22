@@ -25,9 +25,12 @@ import org.opencypher.v9_0.util.attribution.Id
 case class CartesianProductPipe(lhs: Pipe, rhs: Pipe)
                                (val id: Id = Id.INVALID_ID) extends Pipe {
   protected def internalCreateResults(state: QueryState): Iterator[ExecutionContext] = {
-    for (outer <- lhs.createResults(state);
-         inner <- rhs.createResults(state))
-      yield outer mergeWith inner
+    for (lhsRow <- lhs.createResults(state);
+         rhsRow <- rhs.createResults(state))
+      yield {
+        val output = lhsRow.createClone()
+        output.mergeWith(rhsRow)
+        output
+      }
   }
-
 }

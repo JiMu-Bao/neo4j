@@ -41,6 +41,7 @@ import org.neo4j.values.storable.TemporalValue;
 import org.neo4j.values.storable.TextValue;
 import org.neo4j.values.storable.Value;
 import org.neo4j.values.storable.Values;
+import org.neo4j.values.utils.InvalidValuesArgumentException;
 import org.neo4j.values.virtual.ListValue;
 import org.neo4j.values.virtual.MapValue;
 import org.neo4j.values.virtual.MapValueBuilder;
@@ -405,6 +406,46 @@ public final class CypherFunctions
         }
     }
 
+    public static AnyValue propertyGet( String key, AnyValue container, DbAccess dbAccess )
+    {
+        if ( container instanceof VirtualNodeValue )
+        {
+            return dbAccess.nodeProperty( ((VirtualNodeValue) container).id(), dbAccess.propertyKey( key ) );
+        }
+        else if ( container instanceof VirtualRelationshipValue )
+        {
+            return dbAccess
+                    .relationshipProperty( ((VirtualRelationshipValue) container).id(), dbAccess.propertyKey( key ) );
+        }
+        else if ( container instanceof MapValue )
+        {
+            return ((MapValue) container).get( key );
+        }
+        else if ( container instanceof TemporalValue<?,?> )
+        {
+            return ((TemporalValue) container).get( key );
+        }
+        else if ( container instanceof DurationValue )
+        {
+            return ((DurationValue) container).get( key );
+        }
+        else if ( container instanceof PointValue )
+        {
+            try
+            {
+                return ((PointValue) container).get( key );
+            }
+            catch ( InvalidValuesArgumentException e )
+            {
+                throw new InvalidArgumentException( e.getMessage(), e );
+            }
+        }
+        else
+        {
+            throw new CypherTypeException( format( "Type mismatch: expected a map but was %s", container.toString() ), null );
+        }
+    }
+
     public static AnyValue containerIndex( AnyValue container, AnyValue index, DbAccess dbAccess )
     {
         if ( container instanceof VirtualNodeValue )
@@ -683,6 +724,18 @@ public final class CypherFunctions
         }
     }
 
+    public static boolean hasLabel( AnyValue entity, int labelToken, DbAccess access )
+    {
+        if ( entity instanceof NodeValue )
+        {
+            return access.isLabelSetOnNode( labelToken, ((NodeValue) entity).id() );
+        }
+        else
+        {
+            throw new ParameterWrongTypeException( "Expected a Node, got: " + entity, null );
+        }
+    }
+
     public static TextValue type( AnyValue item )
     {
         if ( item instanceof RelationshipValue )
@@ -921,6 +974,79 @@ public final class CypherFunctions
         }
     }
 
+    public static ListValue fromSlice( AnyValue collection, AnyValue fromValue )
+    {
+       int from = asInt( fromValue );
+       ListValue list = makeTraversable( collection );
+       if ( from >= 0 )
+       {
+           return list.drop( from );
+       }
+       else
+       {
+           return list.drop( list.size() + from );
+       }
+    }
+
+    public static ListValue toSlice( AnyValue collection, AnyValue fromValue )
+    {
+        int from = asInt( fromValue );
+        ListValue list = makeTraversable( collection );
+        if ( from >= 0 )
+        {
+            return list.take( from );
+        }
+        else
+        {
+            return list.take( list.size() + from );
+        }
+    }
+
+    public static ListValue fullSlice( AnyValue collection, AnyValue fromValue, AnyValue toValue )
+    {
+        int from = asInt( fromValue );
+        int to = asInt( toValue );
+        ListValue list = makeTraversable( collection );
+        int size = list.size();
+        if ( from >= 0 && to >= 0 )
+        {
+            return list.slice( from, to );
+        }
+        else if ( from >= 0 )
+        {
+            return list.slice( from, size + to );
+        }
+        else if ( to >= 0 )
+        {
+            return list.slice( size + from, to );
+        }
+        else
+        {
+            return list.slice( size + from, size + to );
+        }
+    }
+
+    public static ListValue makeTraversable( AnyValue collection )
+    {
+        ListValue list;
+        if ( collection == NO_VALUE )
+        {
+            return VirtualValues.EMPTY_LIST;
+        }
+        else if ( collection instanceof ListValue )
+        {
+            return  (ListValue) collection;
+        }
+        else if ( collection instanceof ArrayValue )
+        {
+            return VirtualValues.fromArray( (ArrayValue) collection );
+        }
+        else
+        {
+            return VirtualValues.list( collection );
+        }
+    }
+
     private static Value stringToLongValue( TextValue in )
     {
         try
@@ -1036,14 +1162,19 @@ public final class CypherFunctions
         return container.get( asString( index ) );
     }
 
-    static String asString( AnyValue value )
+    public static TextValue asTextValue( AnyValue value )
     {
         if ( !(value instanceof TextValue) )
         {
             throw new CypherTypeException( format( "Expected %s to be a %s, but it was a %s", value,
-                    TextValue.class.getName(), value.getClass().getName()), null );
+                    TextValue.class.getName(), value.getClass().getName() ), null );
         }
-        return ((TextValue) value).stringValue();
+        return (TextValue) value;
+    }
+
+    static String asString( AnyValue value )
+    {
+       return asTextValue( value ).stringValue();
     }
 
     private static NumberValue asNumberValue( AnyValue value )

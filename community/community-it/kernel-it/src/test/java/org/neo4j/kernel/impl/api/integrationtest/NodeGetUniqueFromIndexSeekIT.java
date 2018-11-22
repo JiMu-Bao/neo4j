@@ -120,8 +120,7 @@ public class NodeGetUniqueFromIndexSeekIT extends KernelIntegrationTest
         // when looking for it
         Transaction transaction = newTransaction();
         long foundId = transaction.dataRead().lockingNodeUniqueIndexSeek( index,
-                exact( propertyId1, value1 ),
-                                                                exact( propertyId2, value2 ) );
+                exact( propertyId1, value1 ), exact( propertyId2, value2 ) );
         commit();
 
         // then

@@ -23,7 +23,6 @@ import org.apache.commons.lang3.SystemUtils;
 import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 
@@ -35,20 +34,20 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.DependencyResolver;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.graphdb.schema.IndexDefinition;
 import org.neo4j.index.impl.lucene.explicit.LuceneDataSource;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.io.fs.FileUtils;
 import org.neo4j.io.fs.watcher.FileWatchEventListener;
 import org.neo4j.io.fs.watcher.FileWatcher;
-import org.neo4j.kernel.impl.store.MetaDataStore;
-import org.neo4j.kernel.impl.store.StoreFactory;
+import org.neo4j.io.layout.DatabaseLayout;
+import org.neo4j.kernel.configuration.Settings;
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer;
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo;
 import org.neo4j.kernel.impl.transaction.log.files.TransactionLogFiles;
@@ -63,8 +62,6 @@ import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assume.assumeFalse;
 
-// TODO watchers needs to be moved into datasource lifecycle
-@Ignore
 public class FileWatchIT
 {
     private static final long TEST_TIMEOUT = 600_000;
@@ -95,7 +92,7 @@ public class FileWatchIT
     {
         assumeFalse( SystemUtils.IS_OS_WINDOWS );
 
-        String fileName = MetaDataStore.DEFAULT_NAME;
+        String fileName = testDirectory.databaseLayout().metadataStore().getName();
         FileWatcher fileWatcher = getFileWatcher( database );
         CheckPointer checkpointer = getCheckpointer( database );
         DeletionLatchEventListener deletionListener = new DeletionLatchEventListener( fileName );
@@ -108,7 +105,7 @@ public class FileWatchIT
         }
         while ( !deletionListener.awaitModificationNotification() );
 
-        deleteFile( testDirectory.databaseDir(), fileName );
+        deleteFile( testDirectory.storeDir(), fileName );
         deletionListener.awaitDeletionNotification();
 
         logProvider.assertContainsMessageContaining(
@@ -138,12 +135,13 @@ public class FileWatchIT
     @Test( timeout = TEST_TIMEOUT )
     public void notifyAboutExplicitIndexFolderRemoval() throws InterruptedException, IOException
     {
-        String monitoredDirectory = getExplicitIndexDirectory( storeDir );
+        String monitoredDirectory = getExplicitIndexDirectory( testDirectory.databaseLayout() );
 
         FileWatcher fileWatcher = getFileWatcher( database );
         CheckPointer checkPointer = getCheckpointer( database );
         DeletionLatchEventListener deletionListener = new DeletionLatchEventListener( monitoredDirectory );
-        ModificationEventListener modificationEventListener = new ModificationEventListener( MetaDataStore.DEFAULT_NAME );
+        String metadataStore = testDirectory.databaseLayout().metadataStore().getName();
+        ModificationEventListener modificationEventListener = new ModificationEventListener( metadataStore );
         fileWatcher.addFileWatchEventListener( deletionListener );
         fileWatcher.addFileWatchEventListener( modificationEventListener );
 
@@ -168,7 +166,7 @@ public class FileWatchIT
         FileWatcher fileWatcher = getFileWatcher( database );
         CheckPointer checkPointer = dependencyResolver.resolveDependency( CheckPointer.class );
 
-        String propertyStoreName = MetaDataStore.DEFAULT_NAME + StoreFactory.PROPERTY_STORE_NAME;
+        String propertyStoreName = testDirectory.databaseLayout().propertyStore().getName();
         AccumulativeDeletionEventListener accumulativeListener = new AccumulativeDeletionEventListener();
         ModificationEventListener modificationListener = new ModificationEventListener( propertyStoreName );
         fileWatcher.addFileWatchEventListener( modificationListener );
@@ -207,8 +205,9 @@ public class FileWatchIT
 
         FileWatcher fileWatcher = getFileWatcher( database );
         CheckPointer checkpointer = getCheckpointer( database );
+        String metadataStore = testDirectory.databaseLayout().metadataStore().getName();
         ModificationEventListener modificationEventListener =
-                new ModificationEventListener( MetaDataStore.DEFAULT_NAME );
+                new ModificationEventListener( metadataStore );
         fileWatcher.addFileWatchEventListener( modificationEventListener );
 
         do
@@ -221,7 +220,7 @@ public class FileWatchIT
         String fileName = TransactionLogFiles.DEFAULT_NAME + ".0";
         DeletionLatchEventListener deletionListener = new DeletionLatchEventListener( fileName );
         fileWatcher.addFileWatchEventListener( deletionListener );
-        deleteFile( testDirectory.databaseDir(), fileName );
+        deleteFile( testDirectory.storeDir(), fileName );
         deletionListener.awaitDeletionNotification();
 
         AssertableLogProvider.LogMatcher logMatcher =
@@ -235,7 +234,7 @@ public class FileWatchIT
     {
         assumeFalse( SystemUtils.IS_OS_WINDOWS );
 
-        String fileName = MetaDataStore.DEFAULT_NAME;
+        String fileName = testDirectory.databaseLayout().metadataStore().getName();
         FileWatcher fileWatcher = getFileWatcher( database );
         CheckPointer checkpointer = getCheckpointer( database );
 
@@ -249,15 +248,36 @@ public class FileWatchIT
         while ( !modificationListener.awaitModificationNotification() );
         fileWatcher.removeFileWatchEventListener( modificationListener );
 
-        String storeDirectoryName = DatabaseManager.DEFAULT_DATABASE_NAME;
+        String storeDirectoryName = testDirectory.databaseLayout().databaseDirectory().getName();
         DeletionLatchEventListener eventListener = new DeletionLatchEventListener( storeDirectoryName );
         fileWatcher.addFileWatchEventListener( eventListener );
-        FileUtils.deleteRecursively( storeDir );
+        FileUtils.deleteRecursively( testDirectory.databaseLayout().databaseDirectory() );
 
         eventListener.awaitDeletionNotification();
 
         logProvider.assertContainsMessageContaining(
                 "'" + storeDirectoryName + "' which belongs to the store was deleted while database was running." );
+    }
+
+    @Test( timeout = TEST_TIMEOUT )
+    public void shouldLogWhenDisabled()
+    {
+        AssertableLogProvider logProvider = new AssertableLogProvider( true );
+        GraphDatabaseService db = null;
+        try
+        {
+            db = new TestGraphDatabaseFactory().setInternalLogProvider( logProvider )
+                    .setFileSystem( new NonWatchableFileSystemAbstraction() )
+                    .newEmbeddedDatabaseBuilder( testDirectory.directory( "failed-start-db" ) )
+                    .setConfig( GraphDatabaseSettings.filewatcher_enabled, Settings.FALSE )
+                    .newGraphDatabase();
+
+            logProvider.assertContainsMessageContaining( "File watcher disabled by configuration." );
+        }
+        finally
+        {
+            shutdownDatabaseSilently( db );
+        }
     }
 
     private static void shutdownDatabaseSilently( GraphDatabaseService databaseService )
@@ -306,10 +326,10 @@ public class FileWatchIT
         checkPointer.forceCheckPoint( new SimpleTriggerInfo( "testForceCheckPoint" ) );
     }
 
-    private static String getExplicitIndexDirectory( File storeDir )
+    private static String getExplicitIndexDirectory( DatabaseLayout databaseLayout )
     {
-        File schemaIndexDirectory = LuceneDataSource.getLuceneIndexStoreDirectory( storeDir );
-        Path relativeIndexPath = storeDir.toPath().relativize( schemaIndexDirectory.toPath() );
+        File schemaIndexDirectory = LuceneDataSource.getLuceneIndexStoreDirectory( databaseLayout );
+        Path relativeIndexPath = databaseLayout.databaseDirectory().toPath().relativize( schemaIndexDirectory.toPath() );
         return relativeIndexPath.getName( 0 ).toString();
     }
 
@@ -366,7 +386,7 @@ public class FileWatchIT
 
     private static class AccumulativeDeletionEventListener implements FileWatchEventListener
     {
-        private List<String> deletedFiles = new ArrayList<>();
+        private final List<String> deletedFiles = new ArrayList<>();
 
         @Override
         public void fileDeleted( String fileName )

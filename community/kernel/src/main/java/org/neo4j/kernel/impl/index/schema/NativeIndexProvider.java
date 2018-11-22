@@ -43,8 +43,10 @@ import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
  *
  * @param <KEY> type of {@link NativeIndexSingleValueKey}
  * @param <VALUE> type of {@link NativeIndexValue}
+ * @param <LAYOUT> type of {@link IndexLayout}
  */
-abstract class NativeIndexProvider<KEY extends NativeIndexKey<KEY>,VALUE extends NativeIndexValue> extends IndexProvider
+abstract class NativeIndexProvider<KEY extends NativeIndexKey<KEY>,VALUE extends NativeIndexValue,LAYOUT extends IndexLayout<KEY,VALUE>>
+        extends IndexProvider
 {
     protected final PageCache pageCache;
     protected final FileSystemAbstraction fs;
@@ -52,10 +54,10 @@ abstract class NativeIndexProvider<KEY extends NativeIndexKey<KEY>,VALUE extends
     protected final RecoveryCleanupWorkCollector recoveryCleanupWorkCollector;
     protected final boolean readOnly;
 
-    protected NativeIndexProvider( IndexProviderDescriptor descriptor, int priority, Factory directoryStructureFactory, PageCache pageCache,
+    protected NativeIndexProvider( IndexProviderDescriptor descriptor, Factory directoryStructureFactory, PageCache pageCache,
             FileSystemAbstraction fs, Monitor monitor, RecoveryCleanupWorkCollector recoveryCleanupWorkCollector, boolean readOnly )
     {
-        super( descriptor, priority, directoryStructureFactory );
+        super( descriptor, directoryStructureFactory );
         this.pageCache = pageCache;
         this.fs = fs;
         this.monitor = monitor;
@@ -63,7 +65,15 @@ abstract class NativeIndexProvider<KEY extends NativeIndexKey<KEY>,VALUE extends
         this.readOnly = readOnly;
     }
 
-    abstract Layout<KEY,VALUE> layout( StoreIndexDescriptor descriptor );
+    /**
+     * Instantiates the {@link Layout} which is used in the index backing this native index provider.
+     *
+     * @param descriptor the {@link StoreIndexDescriptor} for this index.
+     * @param storeFile index store file, since some layouts may depend on contents of the header.
+     * If {@code null} it means that nothing must be read from the file before or while instantiating the layout.
+     * @return the correct {@link Layout} for the index.
+     */
+    abstract LAYOUT layout( StoreIndexDescriptor descriptor, File storeFile );
 
     @Override
     public IndexPopulator getPopulator( StoreIndexDescriptor descriptor, IndexSamplingConfig samplingConfig )
@@ -74,21 +84,19 @@ abstract class NativeIndexProvider<KEY extends NativeIndexKey<KEY>,VALUE extends
         }
 
         File storeFile = nativeIndexFileFromIndexId( descriptor.getId() );
-        return newIndexPopulator( storeFile, layout( descriptor ), descriptor, samplingConfig );
+        return newIndexPopulator( storeFile, layout( descriptor, null /*meaning don't read from this file since we're recreating it anyway*/ ), descriptor );
     }
 
-    protected abstract IndexPopulator newIndexPopulator( File storeFile, Layout<KEY,VALUE> layout, StoreIndexDescriptor descriptor,
-            IndexSamplingConfig samplingConfig );
+    protected abstract IndexPopulator newIndexPopulator( File storeFile, LAYOUT layout, StoreIndexDescriptor descriptor );
 
     @Override
     public IndexAccessor getOnlineAccessor( StoreIndexDescriptor descriptor, IndexSamplingConfig samplingConfig ) throws IOException
     {
         File storeFile = nativeIndexFileFromIndexId( descriptor.getId() );
-        return newIndexAccessor( storeFile, layout( descriptor ), descriptor, samplingConfig );
+        return newIndexAccessor( storeFile, layout( descriptor, storeFile ), descriptor );
     }
 
-    protected abstract IndexAccessor newIndexAccessor( File storeFile, Layout<KEY,VALUE> layout, StoreIndexDescriptor descriptor,
-            IndexSamplingConfig samplingConfig ) throws IOException;
+    protected abstract IndexAccessor newIndexAccessor( File storeFile, LAYOUT layout, StoreIndexDescriptor descriptor ) throws IOException;
 
     @Override
     public String getPopulationFailure( StoreIndexDescriptor descriptor ) throws IllegalStateException

@@ -112,13 +112,10 @@ public class BatchingMultipleIndexPopulator extends MultipleIndexPopulator
     }
 
     @Override
-    protected void populateFromUpdateQueue( long currentlyIndexedNodeId )
+    protected void flushAll()
     {
-        log.debug( "Populating from queue." + EOL + this );
-        flushAll();
+        super.flushAll();
         awaitCompletion();
-        super.populateFromUpdateQueue( currentlyIndexedNodeId );
-        log.debug( "Drained queue and all batched updates." + EOL + this );
     }
 
     @Override
@@ -264,6 +261,13 @@ public class BatchingMultipleIndexPopulator extends MultipleIndexPopulator
         return Math.max( 2, MAXIMUM_NUMBER_OF_WORKERS );
     }
 
+    @Override
+    public void close( boolean populationCompletedSuccessfully )
+    {
+        super.close( populationCompletedSuccessfully );
+        shutdownExecutor( !populationCompletedSuccessfully );
+    }
+
     /**
      * A delegating {@link StoreScan} implementation that flushes all pending updates and terminates the executor after
      * the delegate store scan completes.
@@ -280,26 +284,10 @@ public class BatchingMultipleIndexPopulator extends MultipleIndexPopulator
         @Override
         public void run() throws E
         {
-            try
-            {
-                super.run();
-                log.info( "Completed node store scan. " +
-                          "Flushing all pending updates." + EOL + BatchingMultipleIndexPopulator.this );
-                flushAll();
-            }
-            catch ( Throwable scanError )
-            {
-                try
-                {
-                    shutdownExecutor( true );
-                }
-                catch ( Throwable error )
-                {
-                    scanError.addSuppressed( error );
-                }
-                throw scanError;
-            }
-            shutdownExecutor( false );
+            super.run();
+            log.info( "Completed node store scan. " +
+                      "Flushing all pending updates." + EOL + BatchingMultipleIndexPopulator.this );
+            flushAll();
         }
     }
 }

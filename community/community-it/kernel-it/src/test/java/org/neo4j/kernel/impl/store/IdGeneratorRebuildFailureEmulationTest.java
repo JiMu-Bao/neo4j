@@ -36,10 +36,11 @@ import org.neo4j.graphdb.RelationshipType;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.facade.GraphDatabaseFacadeFactory;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
-import org.neo4j.graphdb.factory.module.CommunityEditionModule;
 import org.neo4j.graphdb.factory.module.PlatformModule;
+import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule;
 import org.neo4j.graphdb.mockfs.EphemeralFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.tracing.cursor.context.EmptyVersionContextSupplier;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.configuration.Settings;
@@ -58,25 +59,25 @@ public class IdGeneratorRebuildFailureEmulationTest
 {
     private FileSystem fs;
     private StoreFactory factory;
-    private File storeDirectory;
 
     @Rule
     public final TestDirectory testDirectory = TestDirectory.testDirectory();
     @Rule
     public final PageCacheRule pageCacheRule = new PageCacheRule();
+    private DatabaseLayout databaseLayout;
 
     @Before
     public void initialize()
     {
         fs = new FileSystem();
-        storeDirectory = testDirectory.storeDir();
-        GraphDatabaseService graphdb = new Database( storeDirectory );
+        databaseLayout = testDirectory.databaseLayout();
+        GraphDatabaseService graphdb = new Database( databaseLayout.databaseDirectory() );
         createInitialData( graphdb );
         graphdb.shutdown();
         Map<String, String> params = new HashMap<>();
         params.put( GraphDatabaseSettings.rebuild_idgenerators_fast.name(), Settings.FALSE );
         Config config = Config.defaults( params );
-        factory = new StoreFactory( testDirectory.databaseDir(), config, new DefaultIdGeneratorFactory( fs ),
+        factory = new StoreFactory( databaseLayout, config, new DefaultIdGeneratorFactory( fs ),
                 pageCacheRule.getPageCache( fs ), fs, NullLogProvider.getInstance(), EmptyVersionContextSupplier.EMPTY );
     }
 
@@ -86,7 +87,7 @@ public class IdGeneratorRebuildFailureEmulationTest
         GraphDatabaseService graphdb = null;
         try
         {
-            graphdb = new Database( storeDirectory );
+            graphdb = new Database( databaseLayout.databaseDirectory() );
             verifyData( graphdb );
         }
         finally
@@ -103,9 +104,8 @@ public class IdGeneratorRebuildFailureEmulationTest
         }
     }
 
-    private void performTest( String neostoreFileName )
+    private void performTest( File idFile )
     {
-        File idFile = new File( testDirectory.databaseDir(), neostoreFileName + ".id" );
         // emulate the need for rebuilding id generators by deleting it
         fs.deleteFile( idFile );
         try ( NeoStores neoStores = factory.openAllNeoStores() )
@@ -200,6 +200,10 @@ public class IdGeneratorRebuildFailureEmulationTest
         @Override
         protected void create( File storeDir, Map<String, String> params, GraphDatabaseFacadeFactory.Dependencies dependencies )
         {
+            File absoluteStoreDir = storeDir.getAbsoluteFile();
+            File databasesRoot = absoluteStoreDir.getParentFile();
+            params.put( GraphDatabaseSettings.active_database.name(), absoluteStoreDir.getName() );
+            params.put( GraphDatabaseSettings.databases_root_path.name(), databasesRoot.getAbsolutePath() );
             new GraphDatabaseFacadeFactory( DatabaseInfo.COMMUNITY, CommunityEditionModule::new )
             {
                 @Override
@@ -214,68 +218,67 @@ public class IdGeneratorRebuildFailureEmulationTest
                         }
                     };
                 }
-            }.initFacade( storeDir, params, dependencies, this );
+            }.initFacade( databasesRoot, params, dependencies, this );
         }
-
     }
 
     @Test
     public void neostore()
     {
-        performTest( MetaDataStore.DEFAULT_NAME );
+        performTest( databaseLayout.idMetadataStore() );
     }
 
     @Test
     public void neostore_nodestore_db()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.NODE_STORE_NAME );
+        performTest( databaseLayout.idNodeStore() );
     }
 
     @Test
     public void neostore_propertystore_db_arrays()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.PROPERTY_ARRAYS_STORE_NAME );
+        performTest( databaseLayout.idPropertyArrayStore() );
     }
 
     @Test
     public void neostore_propertystore_db()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.PROPERTY_STORE_NAME );
+        performTest( databaseLayout.idPropertyStore() );
     }
 
     @Test
     public void neostore_propertystore_db_index()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.PROPERTY_KEY_TOKEN_STORE_NAME );
+        performTest( databaseLayout.idPropertyKeyTokenStore() );
     }
 
     @Test
     public void neostore_propertystore_db_index_keys()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.PROPERTY_KEY_TOKEN_NAMES_STORE_NAME );
+        performTest( databaseLayout.idPropertyKeyTokenNamesStore() );
     }
 
     @Test
     public void neostore_propertystore_db_strings()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.PROPERTY_STRINGS_STORE_NAME );
+        performTest( databaseLayout.idPropertyStringStore() );
     }
 
     @Test
     public void neostore_relationshipstore_db()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.RELATIONSHIP_STORE_NAME );
+        performTest( databaseLayout.idRelationshipStore() );
     }
 
     @Test
     public void neostore_relationshiptypestore_db()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.RELATIONSHIP_TYPE_TOKEN_STORE_NAME );
+        performTest( databaseLayout.idRelationshipTypeTokenStore() );
     }
 
     @Test
     public void neostore_relationshiptypestore_db_names()
     {
-        performTest( MetaDataStore.DEFAULT_NAME + StoreFactory.RELATIONSHIP_TYPE_TOKEN_NAMES_STORE_NAME );
+        performTest( databaseLayout.idRelationshipTypeTokenNamesStore() );
     }
 }

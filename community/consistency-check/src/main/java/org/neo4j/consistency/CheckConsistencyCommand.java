@@ -30,10 +30,8 @@ import java.util.Optional;
 import org.neo4j.commandline.admin.AdminCommand;
 import org.neo4j.commandline.admin.CommandFailed;
 import org.neo4j.commandline.admin.IncorrectUsage;
-import org.neo4j.commandline.admin.OutsideWorld;
 import org.neo4j.commandline.arguments.Arguments;
 import org.neo4j.commandline.arguments.OptionalBooleanArg;
-import org.neo4j.commandline.arguments.common.Database;
 import org.neo4j.commandline.arguments.common.OptionalCanonicalPath;
 import org.neo4j.consistency.checking.full.ConsistencyCheckIncompleteException;
 import org.neo4j.consistency.checking.full.ConsistencyFlags;
@@ -43,16 +41,19 @@ import org.neo4j.helpers.collection.MapUtil;
 import org.neo4j.helpers.progress.ProgressMonitorFactory;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.pagecache.ConfigurableStandalonePageCacheFactory;
 import org.neo4j.kernel.impl.recovery.RecoveryRequiredChecker;
 import org.neo4j.kernel.monitoring.Monitors;
 import org.neo4j.logging.FormattedLogProvider;
+import org.neo4j.scheduler.JobScheduler;
 
 import static java.lang.String.format;
 import static org.neo4j.commandline.arguments.common.Database.ARG_DATABASE;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.database_path;
+import static org.neo4j.kernel.impl.scheduler.JobSchedulerFactory.createInitialisedScheduler;
 
 public class CheckConsistencyCommand implements AdminCommand
 {
@@ -81,20 +82,17 @@ public class CheckConsistencyCommand implements AdminCommand
 
     private final Path homeDir;
     private final Path configDir;
-    private final OutsideWorld outsideWorld;
     private final ConsistencyCheckService consistencyCheckService;
 
-    public CheckConsistencyCommand( Path homeDir, Path configDir, OutsideWorld outsideWorld )
+    public CheckConsistencyCommand( Path homeDir, Path configDir )
     {
-        this( homeDir, configDir, outsideWorld, new ConsistencyCheckService() );
+        this( homeDir, configDir, new ConsistencyCheckService() );
     }
 
-    public CheckConsistencyCommand( Path homeDir, Path configDir, OutsideWorld outsideWorld,
-            ConsistencyCheckService consistencyCheckService )
+    public CheckConsistencyCommand( Path homeDir, Path configDir, ConsistencyCheckService consistencyCheckService )
     {
         this.homeDir = homeDir;
         this.configDir = configDir;
-        this.outsideWorld = outsideWorld;
         this.consistencyCheckService = consistencyCheckService;
     }
 
@@ -182,8 +180,9 @@ public class CheckConsistencyCommand implements AdminCommand
 
         try ( FileSystemAbstraction fileSystem = new DefaultFileSystemAbstraction() )
         {
-            File storeDir = backupPath.map( Path::toFile ).orElse( config.get( database_path ) );
-            checkDbState( storeDir, config );
+            File databaseDirectory = backupPath.map( Path::toFile ).orElse( config.get( database_path ) );
+            DatabaseLayout databaseLayout = DatabaseLayout.of( databaseDirectory );
+            checkDbState( databaseLayout, config );
             ZoneId logTimeZone = config.get( GraphDatabaseSettings.db_timezone ).getZoneId();
             // Only output progress indicator if a console receives the output
             ProgressMonitorFactory progressMonitorFactory = ProgressMonitorFactory.NONE;
@@ -193,7 +192,7 @@ public class CheckConsistencyCommand implements AdminCommand
             }
 
             ConsistencyCheckService.Result consistencyCheckResult = consistencyCheckService
-                    .runFullConsistencyCheck( storeDir, config, progressMonitorFactory,
+                    .runFullConsistencyCheck( databaseLayout, config, progressMonitorFactory,
                             FormattedLogProvider.withZoneId( logTimeZone ).toOutputStream( System.out ), fileSystem,
                             verbose, reportDir.toFile(),
                             new ConsistencyFlags( checkGraph, checkIndexes, checkLabelScanStore, checkPropertyOwners ) );
@@ -210,7 +209,7 @@ public class CheckConsistencyCommand implements AdminCommand
         }
     }
 
-    private Map<String,String> loadAdditionalConfig( Optional<Path> additionalConfigFile )
+    private static Map<String,String> loadAdditionalConfig( Optional<Path> additionalConfigFile )
     {
         if ( additionalConfigFile.isPresent() )
         {
@@ -228,15 +227,16 @@ public class CheckConsistencyCommand implements AdminCommand
         return new HashMap<>();
     }
 
-    private void checkDbState( File storeDir, Config additionalConfiguration ) throws CommandFailed
+    private static void checkDbState( DatabaseLayout databaseLayout, Config additionalConfiguration ) throws CommandFailed
     {
         try ( FileSystemAbstraction fileSystem = new DefaultFileSystemAbstraction();
+              JobScheduler jobScheduler = createInitialisedScheduler();
               PageCache pageCache = ConfigurableStandalonePageCacheFactory
-                      .createPageCache( fileSystem, additionalConfiguration ) )
+                      .createPageCache( fileSystem, additionalConfiguration, jobScheduler ) )
         {
             RecoveryRequiredChecker requiredChecker =
                     new RecoveryRequiredChecker( fileSystem, pageCache, additionalConfiguration, new Monitors() );
-            if ( requiredChecker.isRecoveryRequiredAt( storeDir ) )
+            if ( requiredChecker.isRecoveryRequiredAt( databaseLayout ) )
             {
                 throw new CommandFailed(
                         Strings.joinAsLines( "Active logical log detected, this might be a source of inconsistencies.",
@@ -244,10 +244,13 @@ public class CheckConsistencyCommand implements AdminCommand
                                 "To perform recovery please start database and perform clean shutdown." ) );
             }
         }
-        catch ( IOException e )
+        catch ( CommandFailed cf )
         {
-            outsideWorld.stdErrLine(
-                    "Failure when checking for recovery state: '%s', continuing as normal.%n" + e.getMessage() );
+            throw cf;
+        }
+        catch ( Exception e )
+        {
+            throw new CommandFailed( "Failure when checking for recovery state: '%s'." + e.getMessage(), e );
         }
     }
 

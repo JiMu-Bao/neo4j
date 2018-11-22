@@ -103,11 +103,64 @@ object ClauseConverters {
       val returns = items.collect {
         case AliasedReturnItem(_, variable) => variable.name
       }
+      val requiredOrder = findRequiredOrder(projection)
+
       acc.
         withHorizon(projection).
-        withReturns(returns)
+        withReturns(returns).
+        withInterestingOrder(requiredOrder)
     case _ =>
       throw new InternalException("AST needs to be rewritten before it can be used for planning. Got: " + clause)
+  }
+
+  def findRequiredOrder(horizon: QueryHorizon): InterestingOrder = {
+    val requiredOrderColumns = horizon match {
+      case RegularQueryProjection(projections, shuffle, _) =>
+        extractColumnsFromHorizon(shuffle, projections)
+      case AggregatingQueryProjection(groupingExpressions, _, shuffle, _) =>
+        extractColumnsFromHorizon(shuffle, groupingExpressions)
+      case DistinctQueryProjection(groupingExpressions, shuffle, _) =>
+        extractColumnsFromHorizon(shuffle, groupingExpressions)
+      case _ => Seq.empty
+    }
+    InterestingOrder(requiredOrderColumns)
+  }
+
+  private def extractColumnsFromHorizon(shuffle: QueryShuffle, projections: Map[String, Expression]): Seq[InterestingOrder.ColumnOrder] = {
+
+    import InterestingOrder._
+
+    shuffle.sortItems.foldLeft((Seq.empty[ColumnOrder], true))({
+      case ((seq, true), AscSortItem(Property(LogicalVariable(varName), propName))) =>
+        projections.get(varName) match {
+          case Some(LogicalVariable(originalVarName)) => (seq :+ Asc(s"$originalVarName.${propName.name}"), true)
+          case Some(_) => (Seq.empty, false)
+          case None => (seq :+ Asc(s"$varName.${propName.name}"), true)
+        }
+      case ((seq, true), DescSortItem(Property(LogicalVariable(varName), propName))) =>
+        projections.get(varName) match {
+          case Some(LogicalVariable(originalVarName)) => (seq :+ Desc(s"$originalVarName.${propName.name}"), true)
+          case Some(_) => (Seq.empty, false)
+          case None => (seq :+ Desc(s"$varName.${propName.name}"), true)
+        }
+
+      case ((seq, true), AscSortItem(LogicalVariable(name))) =>
+        projections.get(name) match {
+          case Some(Property(LogicalVariable(varName), propName)) => (seq :+ Asc(s"$varName.${propName.name}"), true)
+          case Some(Variable(oldName)) => (seq :+ Asc(oldName), true)
+          case Some(_) => (Seq.empty, false)
+          case None => (seq :+ Asc(name), true)
+        }
+      case ((seq, true), DescSortItem(LogicalVariable(name))) =>
+        projections.get(name) match {
+          case Some(Property(LogicalVariable(varName), propName)) => (seq :+ Desc(s"$varName.${propName.name}"), true)
+          case Some(Variable(oldName)) => (seq :+ Desc(oldName), true)
+          case Some(_) => (Seq.empty, false)
+          case None => (seq :+ Desc(name), true)
+        }
+
+      case _ => (Seq.empty, false)
+    })._1
   }
 
   private def addSetClauseToLogicalPlanInput(acc: PlannerQueryBuilder, clause: SetClause): PlannerQueryBuilder =
@@ -386,6 +439,7 @@ object ClauseConverters {
     case With(false, ri, None, None, None, where)
       if !(builder.currentQueryGraph.hasOptionalPatterns || builder.currentQueryGraph.containsUpdates)
         && ri.items.forall(item => !containsAggregate(item.expression))
+        && builder.currentQueryGraph.shortestPathPatterns.isEmpty
         && ri.items.forall {
         case item: AliasedReturnItem => item.expression == item.variable
         case x => throw new InternalException("This should have been rewritten to an AliasedReturnItem.")
@@ -410,11 +464,15 @@ object ClauseConverters {
 
       val queryProjection =
         asQueryProjection(distinct, returnItems).
-          withShuffle(shuffle)
+          withShuffle(shuffle).
+          withSelection(selections)
+
+      val requiredOrder = findRequiredOrder(queryProjection)
 
       builder.
         withHorizon(queryProjection).
-        withTail(RegularPlannerQuery(QueryGraph(selections = selections)))
+        withInterestingOrder(requiredOrder).
+        withTail(RegularPlannerQuery(QueryGraph()))
 
     case _ =>
       throw new InternalException("AST needs to be rewritten before it can be used for planning. Got: " + clause)

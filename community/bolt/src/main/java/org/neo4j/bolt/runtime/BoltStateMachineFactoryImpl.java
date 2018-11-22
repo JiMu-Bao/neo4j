@@ -34,31 +34,31 @@ import org.neo4j.bolt.v3.BoltStateMachineV3;
 import org.neo4j.bolt.v3.runtime.TransactionStateMachineV3SPI;
 import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
-import org.neo4j.kernel.AvailabilityGuard;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.logging.LogService;
+import org.neo4j.kernel.impl.factory.GraphDatabaseFacade;
+import org.neo4j.logging.internal.LogService;
 import org.neo4j.udc.UsageData;
 
 public class BoltStateMachineFactoryImpl implements BoltStateMachineFactory
 {
     private final DatabaseManager databaseManager;
     private final UsageData usageData;
-    private final AvailabilityGuard availabilityGuard;
     private final LogService logging;
     private final Authentication authentication;
     private final Config config;
     private final Clock clock;
+    private final String activeDatabaseName;
 
-    public BoltStateMachineFactoryImpl( DatabaseManager databaseManager, UsageData usageData, AvailabilityGuard availabilityGuard,
+    public BoltStateMachineFactoryImpl( DatabaseManager databaseManager, UsageData usageData,
             Authentication authentication, Clock clock, Config config, LogService logging )
     {
         this.databaseManager = databaseManager;
         this.usageData = usageData;
-        this.availabilityGuard = availabilityGuard;
         this.logging = logging;
         this.authentication = authentication;
         this.config = config;
         this.clock = clock;
+        this.activeDatabaseName = config.get( GraphDatabaseSettings.active_database );
     }
 
     @Override
@@ -80,19 +80,15 @@ public class BoltStateMachineFactoryImpl implements BoltStateMachineFactory
 
     private BoltStateMachine newStateMachineV1( BoltChannel boltChannel )
     {
-        TransactionStateMachineSPI transactionSPI =
-                new TransactionStateMachineV1SPI( databaseManager.getDatabaseFacade( DatabaseManager.DEFAULT_DATABASE_NAME ).get(), availabilityGuard,
-                        getAwaitDuration(), clock );
-        BoltStateMachineSPI boltSPI = new BoltStateMachineV1SPI( boltChannel, usageData, logging, authentication, transactionSPI );
+        TransactionStateMachineSPI transactionSPI = new TransactionStateMachineV1SPI( getActiveDatabase(), boltChannel, getAwaitDuration(), clock );
+        BoltStateMachineSPI boltSPI = new BoltStateMachineV1SPI( usageData, logging, authentication, transactionSPI );
         return new BoltStateMachineV1( boltSPI, boltChannel, clock );
     }
 
     private BoltStateMachine newStateMachineV3( BoltChannel boltChannel )
     {
-        TransactionStateMachineSPI transactionSPI =
-                new TransactionStateMachineV3SPI( databaseManager.getDatabaseFacade( DatabaseManager.DEFAULT_DATABASE_NAME ).get(), availabilityGuard,
-                        getAwaitDuration(), clock );
-        BoltStateMachineSPI boltSPI = new BoltStateMachineV1SPI( boltChannel, usageData, logging, authentication, transactionSPI );
+        TransactionStateMachineSPI transactionSPI = new TransactionStateMachineV3SPI( getActiveDatabase(), boltChannel, getAwaitDuration(), clock );
+        BoltStateMachineSPI boltSPI = new BoltStateMachineV1SPI( usageData, logging, authentication, transactionSPI );
         return new BoltStateMachineV3( boltSPI, boltChannel, clock );
     }
 
@@ -101,5 +97,10 @@ public class BoltStateMachineFactoryImpl implements BoltStateMachineFactory
         long bookmarkReadyTimeout = config.get( GraphDatabaseSettings.bookmark_ready_timeout ).toMillis();
 
         return Duration.ofMillis( bookmarkReadyTimeout );
+    }
+
+    private GraphDatabaseFacade getActiveDatabase()
+    {
+        return databaseManager.getDatabaseFacade( activeDatabaseName ).get();
     }
 }

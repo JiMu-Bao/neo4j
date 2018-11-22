@@ -47,6 +47,7 @@ import org.neo4j.kernel.impl.index.schema.config.SpatialIndexSettings;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
 import org.neo4j.test.rule.PageCacheRule;
+import org.neo4j.test.rule.RandomRule;
 import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.test.rule.fs.DefaultFileSystemRule;
 import org.neo4j.values.storable.CoordinateReferenceSystem;
@@ -55,7 +56,7 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.fail;
 import static org.junit.rules.RuleChain.outerRule;
-import static org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector.IMMEDIATE;
+import static org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector.immediate;
 import static org.neo4j.kernel.api.index.IndexDirectoryStructure.directoriesByProvider;
 import static org.neo4j.kernel.impl.api.index.IndexUpdateMode.ONLINE;
 import static org.neo4j.test.rule.PageCacheRule.config;
@@ -70,17 +71,18 @@ public class SpatialIndexSettingsTest
 
     private StoreIndexDescriptor schemaIndexDescriptor1;
     private StoreIndexDescriptor schemaIndexDescriptor2;
-    private LayoutTestUtil<SpatialIndexKey,NativeIndexValue> layoutUtil1;
-    private LayoutTestUtil<SpatialIndexKey,NativeIndexValue> layoutUtil2;
+    private ValueCreatorUtil<SpatialIndexKey,NativeIndexValue> layoutUtil1;
+    private ValueCreatorUtil<SpatialIndexKey,NativeIndexValue> layoutUtil2;
     private long indexId1 = 1;
     private long indexId2 = 2;
 
     final DefaultFileSystemRule fs = new DefaultFileSystemRule();
     private final TestDirectory directory = TestDirectory.testDirectory( getClass(), fs.get() );
     private final PageCacheRule pageCacheRule = new PageCacheRule( config().withAccessChecks( true ) );
+    private RandomRule randomRule = new RandomRule();
 
     @Rule
-    public final RuleChain rules = outerRule( fs ).around( directory ).around( pageCacheRule );
+    public final RuleChain rules = outerRule( fs ).around( directory ).around( pageCacheRule ).around( randomRule );
 
     private PageCache pageCache;
     private IndexProvider.Monitor monitor = IndexProvider.Monitor.EMPTY;
@@ -91,8 +93,8 @@ public class SpatialIndexSettingsTest
         pageCache = pageCacheRule.getPageCache( fs );
 
         // Define two indexes based on different labels and different configuredSettings
-        layoutUtil1 = createLayoutTestUtil( indexId1, 42, configuredSettings1 );
-        layoutUtil2 = createLayoutTestUtil( indexId2, 43, configuredSettings2 );
+        layoutUtil1 = createLayoutTestUtil( indexId1, 42 );
+        layoutUtil2 = createLayoutTestUtil( indexId2, 43 );
         schemaIndexDescriptor1 = layoutUtil1.indexDescriptor();
         schemaIndexDescriptor2 = layoutUtil2.indexDescriptor();
 
@@ -148,7 +150,7 @@ public class SpatialIndexSettingsTest
         // and when creating and populating a third index with a third set of configuredSettings
         long indexId3 = 3;
         ConfiguredSpaceFillingCurveSettingsCache settings3 = new ConfiguredSpaceFillingCurveSettingsCache( config );
-        SpatialLayoutTestUtil layoutUtil3 = createLayoutTestUtil( indexId3, 44, settings3 );
+        SpatialValueCreatorUtil layoutUtil3 = createLayoutTestUtil( indexId3, 44 );
         StoreIndexDescriptor schemaIndexDescriptor3 = layoutUtil3.indexDescriptor();
         createEmptyIndex( schemaIndexDescriptor3, provider );
         addUpdates( provider, schemaIndexDescriptor3, layoutUtil3 );
@@ -164,24 +166,25 @@ public class SpatialIndexSettingsTest
         return new IndexSamplingConfig( Config.defaults() );
     }
 
-    private SpatialLayoutTestUtil createLayoutTestUtil( long indexId, int labelId, ConfiguredSpaceFillingCurveSettingsCache configuredSettings )
+    private SpatialValueCreatorUtil createLayoutTestUtil( long indexId, int labelId )
     {
-        return new SpatialLayoutTestUtil( TestIndexDescriptorFactory.forLabel( labelId, 666 ).withId( indexId ), configuredSettings.forCRS( crs ), crs );
+        StoreIndexDescriptor descriptor = TestIndexDescriptorFactory.forLabel( labelId, 666 ).withId( indexId );
+        return new SpatialValueCreatorUtil( descriptor, ValueCreatorUtil.FRACTION_DUPLICATE_NON_UNIQUE );
     }
 
     private SpatialIndexProvider newSpatialIndexProvider( Config config )
     {
-        return new SpatialIndexProvider( pageCache, fs, directoriesByProvider( directory.databaseDir() ), monitor, IMMEDIATE, false, config );
+        return new SpatialIndexProvider( pageCache, fs, directoriesByProvider( directory.databaseDir() ), monitor, immediate(), false, config );
     }
 
     private void addUpdates( SpatialIndexProvider provider, StoreIndexDescriptor schemaIndexDescriptor,
-            LayoutTestUtil<SpatialIndexKey,NativeIndexValue> layoutUtil ) throws IOException, IndexEntryConflictException
+            ValueCreatorUtil<SpatialIndexKey,NativeIndexValue> layoutUtil ) throws IOException, IndexEntryConflictException
     {
         IndexAccessor accessor = provider.getOnlineAccessor( schemaIndexDescriptor, samplingConfig() );
         try ( IndexUpdater updater = accessor.newUpdater( ONLINE ) )
         {
             // when
-            for ( IndexEntryUpdate<IndexDescriptor> update : layoutUtil.someUpdates() )
+            for ( IndexEntryUpdate<IndexDescriptor> update : layoutUtil.someUpdates( randomRule ) )
             {
                 updater.process( update );
             }
@@ -216,8 +219,7 @@ public class SpatialIndexSettingsTest
     {
         SpatialIndexFiles.SpatialFileLayout fileLayout = makeIndexFile( schemaIndexDescriptor.getId(), configuredSettings ).getLayoutForNewIndex();
         SpatialIndexPopulator.PartPopulator populator =
-                new SpatialIndexPopulator.PartPopulator( pageCache, fs, fileLayout, monitor, schemaIndexDescriptor, samplingConfig(),
-                        new StandardConfiguration() );
+                new SpatialIndexPopulator.PartPopulator( pageCache, fs, fileLayout, monitor, schemaIndexDescriptor, new StandardConfiguration() );
         populator.create();
         populator.close( true );
     }

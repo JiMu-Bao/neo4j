@@ -19,12 +19,17 @@
  */
 package org.neo4j.kernel.impl.newapi;
 
+import org.junit.Rule;
 import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
 
+import org.neo4j.internal.kernel.api.IndexOrder;
 import org.neo4j.internal.kernel.api.IndexQuery;
 import org.neo4j.internal.kernel.api.Read;
 import org.neo4j.internal.kernel.api.helpers.StubNodeCursor;
@@ -33,6 +38,7 @@ import org.neo4j.kernel.api.schema.index.TestIndexDescriptorFactory;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
 import org.neo4j.storageengine.api.schema.IndexProgressor;
 import org.neo4j.storageengine.api.schema.IndexProgressor.NodeValueClient;
+import org.neo4j.test.rule.RandomRule;
 import org.neo4j.values.storable.Value;
 
 import static org.junit.Assert.assertEquals;
@@ -40,10 +46,14 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.neo4j.helpers.collection.MapUtil.genericMap;
+import static org.neo4j.values.storable.Values.NO_VALUE;
 import static org.neo4j.values.storable.Values.stringValue;
 
 public class NodeValueClientFilterTest implements IndexProgressor, NodeValueClient
 {
+    @Rule
+    public final RandomRule random = new RandomRule();
+
     private final Read read = mock( Read.class );
     private final List<Event> events = new ArrayList<>();
     private final StubNodeCursor node = new StubNodeCursor();
@@ -128,11 +138,84 @@ public class NodeValueClientFilterTest implements IndexProgressor, NodeValueClie
         assertEvents( initialize(), Event.NEXT, Event.CLOSE );
     }
 
+    @Test
+    public void shouldConsultProvidedAcceptingFiltersForMixOfValuesAndNoValues()
+    {
+        shouldConsultProvidedFilters( Function.identity(), true );
+    }
+
+    @Test
+    public void shouldConsultProvidedAcceptingFiltersForNullValues()
+    {
+        shouldConsultProvidedFilters( v -> null, true );
+    }
+
+    @Test
+    public void shouldConsultProvidedDenyingFiltersForMixOfValuesAndNoValues()
+    {
+        shouldConsultProvidedFilters( Function.identity(), false );
+    }
+
+    @Test
+    public void shouldConsultProvidedDenyingFiltersForNullValues()
+    {
+        shouldConsultProvidedFilters( v -> null, false );
+    }
+
+    private void shouldConsultProvidedFilters( Function<Value[],Value[]> filterValues, boolean filterAcceptsValue )
+    {
+        // given
+        long nodeReference = 123;
+        int labelId = 10;
+        int slots = random.nextInt( 3, 8 );
+        IndexQuery[] filters = new IndexQuery[slots];
+        Value[] actualValues = new Value[slots];
+        Value[] values = new Value[slots];
+        Map<Integer,Value> properties = new HashMap<>();
+        int[] propertyKeyIds = new int[slots];
+        int filterCount = 0;
+        for ( int i = 0; i < slots; i++ )
+        {
+            actualValues[i] = random.nextValue();
+            int propertyKeyId = i;
+            propertyKeyIds[i] = propertyKeyId;
+            //    we want at least one filter         ,  randomly add filter or not
+            if ( (filterCount == 0 && i == slots - 1) || random.nextBoolean() )
+            {
+                Object filterValue = (filterAcceptsValue ? actualValues[i] : anyOtherValueThan( actualValues[i] )).asObjectCopy();
+                filters[i] = IndexQuery.exact( propertyKeyId, filterValue );
+                filterCount++;
+            }
+            values[i] = random.nextBoolean() ? NO_VALUE : actualValues[i];
+            properties.put( propertyKeyId, actualValues[i] );
+        }
+        node.withNode( nodeReference, new long[]{labelId}, properties );
+
+        // when
+        NodeValueClientFilter filter = new NodeValueClientFilter( this, node, property, read, filters );
+        filter.initialize( TestIndexDescriptorFactory.forLabel( labelId, propertyKeyIds ), this, null, IndexOrder.NONE, true );
+        boolean accepted = filter.acceptNode( nodeReference, filterValues.apply( values ) );
+
+        // then
+        assertEquals( filterAcceptsValue, accepted );
+    }
+
+    private Value anyOtherValueThan( Value valueToNotReturn )
+    {
+        Value candidate;
+        do
+        {
+            candidate = random.nextValue();
+        }
+        while ( candidate.eq( valueToNotReturn ) );
+        return candidate;
+    }
+
     private NodeValueClientFilter initializeFilter( IndexQuery... filters )
     {
         NodeValueClientFilter filter = new NodeValueClientFilter(
                 this, node, property, read, filters );
-        filter.initialize( TestIndexDescriptorFactory.forLabel( 11), this, null );
+        filter.initialize( TestIndexDescriptorFactory.forLabel( 11), this, null, IndexOrder.NONE, true );
         return filter;
     }
 
@@ -147,7 +230,7 @@ public class NodeValueClientFilterTest implements IndexProgressor, NodeValueClie
     }
 
     @Override
-    public void initialize( IndexDescriptor descriptor, IndexProgressor progressor, IndexQuery[] queries )
+    public void initialize( IndexDescriptor descriptor, IndexProgressor progressor, IndexQuery[] queries, IndexOrder indexOrder, boolean needsValues )
     {
         events.add( new Event.Initialize( progressor, descriptor.schema().getPropertyIds() ) );
     }

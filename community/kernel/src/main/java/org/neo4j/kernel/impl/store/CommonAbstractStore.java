@@ -28,7 +28,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import org.neo4j.graphdb.config.Setting;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.collection.Visitor;
 import org.neo4j.io.pagecache.PageCache;
@@ -70,18 +69,19 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
 
     protected final Config configuration;
     protected final PageCache pageCache;
-    final File storageFileName;
     protected final IdType idType;
     protected final IdGeneratorFactory idGeneratorFactory;
     protected final Log log;
-    protected PagedFile storeFile;
     protected final String storeVersion;
     protected final RecordFormat<RECORD> recordFormat;
+    final File storageFile;
+    private final File idFile;
+    private final String typeDescriptor;
+    protected PagedFile pagedFile;
+    protected int recordSize;
     private IdGenerator idGenerator;
     private boolean storeOk = true;
     private RuntimeException causeOfStoreNotOk;
-    private final String typeDescriptor;
-    protected int recordSize;
 
     private final StoreHeaderFormat<HEADER> storeHeaderFormat;
     private HEADER storeHeader;
@@ -89,7 +89,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
     private final OpenOption[] openOptions;
 
     /**
-     * Opens and validates the store contained in <CODE>fileName</CODE>
+     * Opens and validates the store contained in <CODE>file</CODE>
      * loading any configuration defined in <CODE>config</CODE>. After
      * validation the <CODE>initStorage</CODE> method is called.
      * <p>
@@ -101,10 +101,12 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
      * throws IOException if the unable to open the storage or if the
      * <CODE>initStorage</CODE> method fails
      *
+     * @param databaseName database name
      * @param idType The Id used to index into this store
      */
     public CommonAbstractStore(
-            File fileName,
+            File file,
+            File idFile,
             Config configuration,
             IdType idType,
             IdGeneratorFactory idGeneratorFactory,
@@ -116,7 +118,8 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
             String storeVersion,
             OpenOption... openOptions )
     {
-        this.storageFileName = fileName;
+        this.storageFile = file;
+        this.idFile = idFile;
         this.configuration = configuration;
         this.idGeneratorFactory = idGeneratorFactory;
         this.pageCache = pageCache;
@@ -143,7 +146,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
 
     private void closeAndThrow( Exception e )
     {
-        if ( storeFile != null )
+        if ( pagedFile != null )
         {
             try
             {
@@ -183,7 +186,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
     {
         int pageSize = pageCache.pageSize();
         int filePageSize;
-        try ( PagedFile pagedFile = pageCache.map( storageFileName, pageSize, ANY_PAGE_SIZE ) )
+        try ( PagedFile pagedFile = pageCache.map( storageFile, pageSize, ANY_PAGE_SIZE ) )
         {
             extractHeaderRecord( pagedFile );
             filePageSize = pageCache.pageSize() - pageCache.pageSize() % getRecordSize();
@@ -206,18 +209,18 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
             {
                 throw (StoreNotFoundException) e;
             }
-            throw new StoreNotFoundException( "Store file not found: " + storageFileName, e );
+            throw new StoreNotFoundException( "Store file not found: " + storageFile, e );
         }
         catch ( IOException e )
         {
-            throw new UnderlyingStorageException( "Unable to open store file: " + storageFileName, e );
+            throw new UnderlyingStorageException( "Unable to open store file: " + storageFile, e );
         }
         loadStorage( filePageSize );
     }
 
     private void createStore( int pageSize ) throws IOException
     {
-        try ( PagedFile file = pageCache.map( storageFileName, pageSize, StandardOpenOption.CREATE ) )
+        try ( PagedFile file = pageCache.map( storageFile, pageSize, StandardOpenOption.CREATE ) )
         {
             initialiseNewStoreFile( file );
         }
@@ -228,12 +231,12 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
     {
         try
         {
-            storeFile = pageCache.map( getStorageFileName(), filePageSize, openOptions );
+            pagedFile = pageCache.map( storageFile, filePageSize, openOptions );
             loadIdGenerator();
         }
         catch ( IOException e )
         {
-            throw new UnderlyingStorageException( "Unable to open store file: " + storageFileName, e );
+            throw new UnderlyingStorageException( "Unable to open store file: " + storageFile, e );
         }
     }
 
@@ -261,7 +264,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         // use it when initializing their stores to write some records.
         recordSize = determineRecordSize();
 
-        idGeneratorFactory.create( getIdFileName(), getNumberOfReservedLowIds(), false );
+        idGeneratorFactory.create( idFile, getNumberOfReservedLowIds(), false );
     }
 
     private void createHeaderRecord( PageCursor cursor )
@@ -296,8 +299,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
                 }
                 else
                 {
-                    throw new StoreNotFoundException( "Fail to read header record of store file: " +
-                                                      storageFileName );
+                    throw new StoreNotFoundException( "Fail to read header record of store file: " + storageFile );
                 }
             }
         }
@@ -310,18 +312,18 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
 
     protected long pageIdForRecord( long id )
     {
-        return RecordPageLocationCalculator.pageIdForRecord( id, storeFile.pageSize(), recordSize );
+        return RecordPageLocationCalculator.pageIdForRecord( id, pagedFile.pageSize(), recordSize );
     }
 
     protected int offsetForId( long id )
     {
-        return RecordPageLocationCalculator.offsetForId( id, storeFile.pageSize(), recordSize );
+        return RecordPageLocationCalculator.offsetForId( id, pagedFile.pageSize(), recordSize );
     }
 
     @Override
     public int getRecordsPerPage()
     {
-        return storeFile.pageSize() / recordSize;
+        return pagedFile.pageSize() / recordSize;
     }
 
     public byte[] getRawRecordData( long id ) throws IOException
@@ -329,7 +331,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         byte[] data = new byte[recordSize];
         long pageId = pageIdForRecord( id );
         int offset = offsetForId( id );
-        try ( PageCursor cursor = storeFile.io( pageId, PagedFile.PF_SHARED_READ_LOCK ) )
+        try ( PageCursor cursor = pagedFile.io( pageId, PagedFile.PF_SHARED_READ_LOCK ) )
         {
             if ( cursor.next() )
             {
@@ -381,7 +383,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         {
             if ( !getStoreOk() )
             {
-                log.debug( getStorageFileName() + " non clean shutdown detected" );
+                log.debug( storageFile + " non clean shutdown detected" );
             }
         }
     }
@@ -391,7 +393,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         long pageId = pageIdForRecord( id );
         int offset = offsetForId( id );
 
-        try ( PageCursor cursor = storeFile.io( pageId, PF_SHARED_READ_LOCK ) )
+        try ( PageCursor cursor = pagedFile.io( pageId, PF_SHARED_READ_LOCK ) )
         {
             boolean recordIsInUse = false;
             if ( cursor.next() )
@@ -423,7 +425,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         try
         {
             long pageId = pageIdForRecord( id );
-            return storeFile.io( pageId, PF_SHARED_READ_LOCK );
+            return pagedFile.io( pageId, PF_SHARED_READ_LOCK );
         }
         catch ( IOException e )
         {
@@ -448,9 +450,9 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
             throw new InvalidRecordException( "Illegal blockSize: " + blockSize );
         }
 
-        log.info( "Rebuilding id generator for[" + getStorageFileName() + "] ..." );
+        log.info( "Rebuilding id generator for[" + getStorageFile() + "] ..." );
         closeIdGenerator();
-        createIdGenerator( getIdFileName() );
+        createIdGenerator( idFile );
         openIdGenerator();
 
         long defraggedCount = 0;
@@ -462,7 +464,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
             setHighId( foundHighId );
             if ( !fastRebuild )
             {
-                try ( PageCursor cursor = storeFile.io( 0, PF_SHARED_WRITE_LOCK | PF_READ_AHEAD ) )
+                try ( PageCursor cursor = pagedFile.io( 0, PF_SHARED_WRITE_LOCK | PF_READ_AHEAD ) )
                 {
                     defraggedCount = rebuildIdGeneratorSlow( cursor, getRecordsPerPage(), blockSize, foundHighId );
                 }
@@ -470,11 +472,11 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         }
         catch ( IOException e )
         {
-            throw new UnderlyingStorageException( "Unable to rebuild id generator " + getStorageFileName(), e );
+            throw new UnderlyingStorageException( "Unable to rebuild id generator " + getStorageFile(), e );
         }
 
-        log.info( "[" + getStorageFileName() + "] high id=" + getHighId() + " (defragged=" + defraggedCount + ")" );
-        log.info( getStorageFileName() + " rebuild id generator, highId=" + getHighId() +
+        log.info( "[" + getStorageFile() + "] high id=" + getHighId() + " (defragged=" + defraggedCount + ")" );
+        log.info( getStorageFile() + " rebuild id generator, highId=" + getHighId() +
                   " defragged count=" + defraggedCount );
 
         if ( !fastRebuild )
@@ -486,7 +488,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
 
     protected boolean isOnlyFastIdGeneratorRebuildEnabled( Config config )
     {
-        return config.get( Configuration.rebuild_idgenerators_fast );
+        return config.get( GraphDatabaseSettings.rebuild_idgenerators_fast );
     }
 
     private long rebuildIdGeneratorSlow( PageCursor cursor, int recordsPerPage, int blockSize,
@@ -548,8 +550,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         if ( cursor.checkAndClearBoundsFlag() )
         {
             throw new UnderlyingStorageException(
-                    "Out of bounds access on page " + cursor.getCurrentPageId() + " detected while scanning the " +
-                    storageFileName + " file for deleted records" );
+                    "Out of bounds access on page " + cursor.getCurrentPageId() + " detected while scanning the " + storageFile + " file for deleted records" );
         }
     }
 
@@ -686,14 +687,9 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
      * @return The name of this store
      */
     @Override
-    public File getStorageFileName()
+    public File getStorageFile()
     {
-        return storageFileName;
-    }
-
-    private File getIdFileName()
-    {
-        return new File( getStorageFileName().getPath() + ".id" );
+        return storageFile;
     }
 
     /**
@@ -706,7 +702,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
      */
     void openIdGenerator()
     {
-        idGenerator = idGeneratorFactory.open( getIdFileName(), getIdType(), this::scanForHighId, recordFormat.getMaxId() );
+        idGenerator = idGeneratorFactory.open( idFile, getIdType(), this::scanForHighId, recordFormat.getMaxId() );
     }
 
     /**
@@ -719,7 +715,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
      */
     protected long scanForHighId()
     {
-        try ( PageCursor cursor = storeFile.io( 0, PF_SHARED_READ_LOCK ) )
+        try ( PageCursor cursor = pagedFile.io( 0, PF_SHARED_READ_LOCK ) )
         {
             int recordsPerPage = getRecordsPerPage();
             int recordSize = getRecordSize();
@@ -731,7 +727,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
              */
             final long chunkSizeInPages = 256; // 2MiB (8192 bytes/page * 256 pages/chunk)
 
-            long chunkEndId = storeFile.getLastPageId();
+            long chunkEndId = pagedFile.getLastPageId();
             while ( chunkEndId >= 0 )
             {
                 // Do pre-fetch of the chunk
@@ -772,7 +768,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         }
         catch ( IOException e )
         {
-            throw new UnderlyingStorageException( "Unable to find high id by scanning backwards " + getStorageFileName(), e );
+            throw new UnderlyingStorageException( "Unable to find high id by scanning backwards " + getStorageFile(), e );
         }
     }
 
@@ -837,7 +833,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
     {
         try
         {
-            storeFile.flushAndForce();
+            pagedFile.flushAndForce();
         }
         catch ( IOException e )
         {
@@ -852,9 +848,9 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
      */
     void assertNotClosed()
     {
-        if ( storeFile == null )
+        if ( pagedFile == null )
         {
-            throw new IllegalStateException( this + " for file '" + storageFileName + "' is closed" );
+            throw new IllegalStateException( this + " for file '" + storageFile + "' is closed" );
         }
     }
 
@@ -876,7 +872,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         }
         catch ( IOException | IllegalStateException e )
         {
-            throw new UnderlyingStorageException( "Failed to close store file: " + getStorageFileName(), e );
+            throw new UnderlyingStorageException( "Failed to close store file: " + getStorageFile(), e );
         }
     }
 
@@ -889,9 +885,9 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
              * It is the case since we wand to mark the id generator as closed cleanly ONLY IF
              * also the store file is cleanly shutdown.
              */
-            if ( storeFile != null )
+            if ( pagedFile != null )
             {
-                storeFile.close();
+                pagedFile.close();
             }
             if ( idGenerator != null )
             {
@@ -907,7 +903,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         }
         finally
         {
-            storeFile = null;
+            pagedFile = null;
         }
     }
 
@@ -1023,7 +1019,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
     @Override
     public RECORD getRecord( long id, RECORD record, RecordLoad mode )
     {
-        try ( PageCursor cursor = storeFile.io( getNumberOfReservedLowIds(), PF_SHARED_READ_LOCK ) )
+        try ( PageCursor cursor = pagedFile.io( getNumberOfReservedLowIds(), PF_SHARED_READ_LOCK ) )
         {
             readIntoRecord( id, record, mode, cursor );
             return record;
@@ -1080,7 +1076,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
             long id = record.getId() + 1;
             record.setId( id );
             long pageId = cursor.getCurrentPageId();
-            if ( offset >= storeFile.pageSize() || pageId < 0 )
+            if ( offset >= pagedFile.pageSize() || pageId < 0 )
             {
                 if ( !cursor.next() )
                 {
@@ -1119,7 +1115,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
 
         long pageId = pageIdForRecord( id );
         int offset = offsetForId( id );
-        try ( PageCursor cursor = storeFile.io( pageId, PF_SHARED_WRITE_LOCK ) )
+        try ( PageCursor cursor = pagedFile.io( pageId, PF_SHARED_WRITE_LOCK ) )
         {
             if ( cursor.next() )
             {
@@ -1225,7 +1221,7 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
         long pageId = pageIdForRecord( recordId );
         int offset = offsetForId( recordId );
         throw new UnderlyingStorageException( buildOutOfBoundsExceptionMessage(
-                record, pageId, offset, recordSize, storeFile.pageSize(), storageFileName.getAbsolutePath() ) );
+                record, pageId, offset, recordSize, pagedFile.pageSize(), storageFile.getAbsolutePath() ) );
     }
 
     static String buildOutOfBoundsExceptionMessage( AbstractBaseRecord record, long pageId, int offset, int recordSize,
@@ -1272,10 +1268,5 @@ public abstract class CommonAbstractStore<RECORD extends AbstractBaseRecord,HEAD
     public int getStoreHeaderInt()
     {
         return ((IntStoreHeader) storeHeader).value();
-    }
-
-    public abstract static class Configuration
-    {
-        static final Setting<Boolean> rebuild_idgenerators_fast = GraphDatabaseSettings.rebuild_idgenerators_fast;
     }
 }

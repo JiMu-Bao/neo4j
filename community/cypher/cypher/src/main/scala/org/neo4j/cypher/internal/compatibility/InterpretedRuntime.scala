@@ -21,39 +21,40 @@ package org.neo4j.cypher.internal.compatibility
 
 import org.neo4j.cypher.internal.compatibility.v3_5.runtime._
 import org.neo4j.cypher.internal.compatibility.v3_5.runtime.executionplan._
-import org.neo4j.cypher.internal.compatibility.v3_5.runtime.profiler.Profiler
+import org.neo4j.cypher.internal.compatibility.v3_5.runtime.profiler.{InterpretedProfileInformation, Profiler}
 import org.neo4j.cypher.internal.compiler.v3_5.phases.LogicalPlanState
-import org.neo4j.cypher.internal.planner.v3_5.spi.PlanningAttributes.Cardinalities
+import org.neo4j.cypher.internal.runtime.QueryContext
 import org.neo4j.cypher.internal.runtime.interpreted.UpdateCountingQueryContext
 import org.neo4j.cypher.internal.runtime.interpreted.commands.convert.{CommunityExpressionConverter, ExpressionConverters}
 import org.neo4j.cypher.internal.runtime.interpreted.pipes.PipeExecutionBuilderContext
-import org.neo4j.cypher.internal.runtime.{ExecutionMode, InternalExecutionResult, ProfileMode, QueryContext}
+import org.neo4j.cypher.internal.runtime.planDescription.Argument
+import org.neo4j.cypher.result.RuntimeResult
 import org.neo4j.values.virtual.MapValue
-import org.opencypher.v9_0.frontend.PlannerName
 import org.opencypher.v9_0.frontend.phases.InternalNotificationLogger
-import org.opencypher.v9_0.util.PeriodicCommitInOpenTransactionException
+import org.opencypher.v9_0.util.{InternalNotification, PeriodicCommitInOpenTransactionException}
 
 object InterpretedRuntime extends CypherRuntime[RuntimeContext] {
   override def compileToExecutable(state: LogicalPlanState, context: RuntimeContext): ExecutionPlan = {
-    val cardinalities = state.cardinalities
+    val cardinalities = state.planningAttributes.cardinalities
     val logicalPlan = state.logicalPlan
-    val converters = new ExpressionConverters(CommunityExpressionConverter)
+    val converters = new ExpressionConverters(CommunityExpressionConverter(context.tokenContext))
     val executionPlanBuilder = new PipeExecutionPlanBuilder(
       expressionConverters = converters,
       pipeBuilderFactory = InterpretedPipeBuilderFactory)
-    val pipeBuildContext = PipeExecutionBuilderContext(state.semanticTable(), context.readOnly, cardinalities)
+    val pipeBuildContext = PipeExecutionBuilderContext(state.semanticTable(), context.readOnly)
     val pipe = executionPlanBuilder.build(logicalPlan)(pipeBuildContext, context.tokenContext)
     val periodicCommitInfo = state.periodicCommit.map(x => PeriodicCommitInfo(x.batchSize))
     val columns = state.statement().returnColumns
-    val resultBuilderFactory = InterpretedExecutionResultBuilderFactory(pipe, context.readOnly, columns, logicalPlan)
+    val resultBuilderFactory = InterpretedExecutionResultBuilderFactory(pipe,
+                                                                        context.readOnly,
+                                                                        columns,
+                                                                        logicalPlan,
+                                                                        context.config.lenientCreateRelationship)
 
     new InterpretedExecutionPlan(periodicCommitInfo,
                                  resultBuilderFactory,
-                                 context.notificationLogger,
-                                 state.plannerName,
                                  InterpretedRuntimeName,
-                                 context.readOnly,
-                                 cardinalities)
+                                 context.readOnly)
   }
 
   /**
@@ -62,19 +63,14 @@ object InterpretedRuntime extends CypherRuntime[RuntimeContext] {
     */
   class InterpretedExecutionPlan(periodicCommit: Option[PeriodicCommitInfo],
                                  resultBuilderFactory: ExecutionResultBuilderFactory,
-                                 notificationLogger: InternalNotificationLogger,
-                                 plannerName: PlannerName,
                                  override val runtimeName: RuntimeName,
-                                 readOnly: Boolean,
-                                 cardinalities: Cardinalities) extends ExecutionPlan {
+                                 readOnly: Boolean) extends ExecutionPlan {
 
-    override def run(queryContext: QueryContext, planType: ExecutionMode, params: MapValue): InternalExecutionResult = {
-      val builder = resultBuilderFactory.create()
+    override def run(queryContext: QueryContext, doProfile: Boolean, params: MapValue): RuntimeResult = {
+      val builderContext = if (!readOnly || doProfile) new UpdateCountingQueryContext(queryContext) else queryContext
+      val builder = resultBuilderFactory.create(builderContext)
 
-      val profiling = planType == ProfileMode
-      val builderContext = if (!readOnly || profiling) new UpdateCountingQueryContext(queryContext) else queryContext
-
-      builder.setQueryContext(builderContext)
+      val profileInformation = new InterpretedProfileInformation
 
       if (periodicCommit.isDefined) {
         if (!builderContext.transactionalContext.isTopLevelTx)
@@ -82,10 +78,16 @@ object InterpretedRuntime extends CypherRuntime[RuntimeContext] {
         builder.setLoadCsvPeriodicCommitObserver(periodicCommit.get.batchRowCount)
       }
 
-      if (profiling)
-        builder.setPipeDecorator(new Profiler(queryContext.transactionalContext.databaseInfo))
+      if (doProfile)
+        builder.setPipeDecorator(new Profiler(queryContext.transactionalContext.databaseInfo, profileInformation))
 
-      builder.build(planType, params, notificationLogger, plannerName, runtimeName, readOnly, cardinalities)
+      builder.build(params,
+                    readOnly,
+                    profileInformation)
     }
+
+    override def metadata: Seq[Argument] = Nil
+
+    override def notifications: Set[InternalNotification] = Set.empty
   }
 }

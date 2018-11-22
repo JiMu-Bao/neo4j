@@ -61,7 +61,7 @@ public class StubKernelTransaction implements KernelTransaction
     }
 
     @Override
-    public IndexDescriptor indexUniqueCreate( SchemaDescriptor schema, Optional<String> provider )
+    public IndexDescriptor indexUniqueCreate( SchemaDescriptor schema, String provider )
     {
         throw new UnsupportedOperationException( "not implemented" );
     }
@@ -82,18 +82,6 @@ public class StubKernelTransaction implements KernelTransaction
     public Read dataRead()
     {
         throw new UnsupportedOperationException( "not implemented" );
-    }
-
-    @Override
-    public Read stableDataRead()
-    {
-        return null;
-    }
-
-    @Override
-    public void markAsStable()
-    {
-
     }
 
     @Override

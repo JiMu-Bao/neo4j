@@ -37,6 +37,7 @@ import org.neo4j.storageengine.api.RelationshipDirection;
 import org.neo4j.storageengine.api.StorageProperty;
 import org.neo4j.storageengine.api.txstate.LongDiffSets;
 import org.neo4j.storageengine.api.txstate.NodeState;
+import org.neo4j.values.storable.Value;
 
 import static java.util.Collections.emptyIterator;
 
@@ -99,6 +100,12 @@ class NodeStateImpl extends PropertyContainerStateImpl implements NodeState
         }
 
         @Override
+        public Value propertyValue( int propertyKey )
+        {
+            return null;
+        }
+
+        @Override
         public LongIterator getAddedRelationships()
         {
             return ImmutableEmptyLongIterator.INSTANCE;
@@ -132,7 +139,7 @@ class NodeStateImpl extends PropertyContainerStateImpl implements NodeState
     {
         if ( labelDiffSets == null )
         {
-            labelDiffSets = new MutableLongDiffSetsImpl();
+            labelDiffSets = new MutableLongDiffSetsImpl( collectionsFactory );
         }
         return labelDiffSets;
     }

@@ -47,7 +47,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class GenericKeyStateCompareTest
 {
-
     @Test
     void compareGenericKeyState()
     {
@@ -113,21 +112,21 @@ class GenericKeyStateCompareTest
                         DurationValue.duration( 12, 10, 10, 10 ),
                         DurationValue.duration( 12, 10, 10, 10 )
                 } )
-//                Values.pointValue( CoordinateReferenceSystem.Cartesian, 0, 0 ),
-//                Values.pointValue( CoordinateReferenceSystem.WGS84, 12.78, 56.7 ) // todo add when spatial is supported
+                // PointValue/PointArray comparison can't be compared to that of the GenericKeyState for those points
+                // since the index compares in a way which is designed to be queryable, so they have different sorting.
         );
         allValues.sort( Values.COMPARATOR );
 
-        List<GenericKeyState> states = new ArrayList<>();
+        List<GenericKey> states = new ArrayList<>();
         for ( Value value : allValues )
         {
-            GenericKeyState state = new GenericKeyState();
+            GenericKey state = new GenericKey( null );
             state.writeValue( value, NativeIndexKey.Inclusion.NEUTRAL );
             states.add( state );
         }
         Collections.shuffle( states );
-        states.sort( GenericKeyState::compareValueTo );
-        List<Value> sortedStatesAsValues = states.stream().map( GenericKeyState::asValue ).collect( Collectors.toList() );
+        states.sort( GenericKey::compareValueTo );
+        List<Value> sortedStatesAsValues = states.stream().map( GenericKey::asValue ).collect( Collectors.toList() );
         assertEquals( allValues, sortedStatesAsValues );
     }
 }

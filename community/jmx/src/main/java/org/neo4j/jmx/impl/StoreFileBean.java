@@ -20,23 +20,16 @@
 package org.neo4j.jmx.impl;
 
 import java.io.File;
-import java.io.IOException;
 import javax.management.NotCompliantMBeanException;
 
 import org.neo4j.helpers.Service;
 import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.io.fs.FileUtils;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.jmx.StoreFile;
 import org.neo4j.kernel.NeoStoreDataSource;
-import org.neo4j.kernel.impl.store.MetaDataStore;
 import org.neo4j.kernel.impl.transaction.log.files.LogFiles;
 import org.neo4j.kernel.impl.transaction.state.DataSourceManager;
-
-import static org.neo4j.kernel.impl.store.StoreFactory.NODE_STORE_NAME;
-import static org.neo4j.kernel.impl.store.StoreFactory.PROPERTY_ARRAYS_STORE_NAME;
-import static org.neo4j.kernel.impl.store.StoreFactory.PROPERTY_STORE_NAME;
-import static org.neo4j.kernel.impl.store.StoreFactory.PROPERTY_STRINGS_STORE_NAME;
-import static org.neo4j.kernel.impl.store.StoreFactory.RELATIONSHIP_STORE_NAME;
 
 @Service.Implementation( ManagementBeanProvider.class )
 public final class StoreFileBean extends ManagementBeanProvider
@@ -55,15 +48,10 @@ public final class StoreFileBean extends ManagementBeanProvider
 
     static class StoreFileImpl extends Neo4jMBean implements StoreFile
     {
-        private static final String NODE_STORE = MetaDataStore.DEFAULT_NAME + NODE_STORE_NAME;
-        private static final String RELATIONSHIP_STORE = MetaDataStore.DEFAULT_NAME +  RELATIONSHIP_STORE_NAME;
-        private static final String PROPERTY_STORE = MetaDataStore.DEFAULT_NAME + PROPERTY_STORE_NAME;
-        private static final String ARRAY_STORE = MetaDataStore.DEFAULT_NAME + PROPERTY_ARRAYS_STORE_NAME;
-        private static final String STRING_STORE = MetaDataStore.DEFAULT_NAME + PROPERTY_STRINGS_STORE_NAME;
-
-        private File storePath;
+        private File databaseDirectory;
         private LogFiles logFiles;
         private FileSystemAbstraction fs;
+        private DatabaseLayout databaseLayout;
 
         StoreFileImpl( ManagementData management ) throws NotCompliantMBeanException
         {
@@ -78,7 +66,8 @@ public final class StoreFileBean extends ManagementBeanProvider
                 public void registered( NeoStoreDataSource ds )
                 {
                     logFiles = resolveDependency( ds, LogFiles.class );
-                    storePath = resolvePath( ds );
+                    databaseLayout = ds.getDatabaseLayout();
+                    databaseDirectory = resolveDatabaseDirectory();
                 }
 
                 private <T> T resolveDependency( NeoStoreDataSource ds, Class<T> clazz )
@@ -90,19 +79,13 @@ public final class StoreFileBean extends ManagementBeanProvider
                 public void unregistered( NeoStoreDataSource ds )
                 {
                     logFiles = null;
-                    storePath = null;
+                    databaseDirectory = null;
+                    databaseLayout = null;
                 }
 
-                private File resolvePath( NeoStoreDataSource ds )
+                private File resolveDatabaseDirectory()
                 {
-                    try
-                    {
-                        return ds.getDatabaseDirectory().getCanonicalFile().getAbsoluteFile();
-                    }
-                    catch ( IOException e )
-                    {
-                        return ds.getDatabaseDirectory().getAbsoluteFile();
-                    }
+                    return databaseLayout.databaseDirectory();
                 }
             } );
         }
@@ -110,7 +93,7 @@ public final class StoreFileBean extends ManagementBeanProvider
         @Override
         public long getTotalStoreSize()
         {
-            return storePath == null ? 0 : FileUtils.size( fs, storePath );
+            return databaseDirectory == null ? 0 : FileUtils.size( fs, databaseDirectory );
         }
 
         @Override
@@ -122,36 +105,36 @@ public final class StoreFileBean extends ManagementBeanProvider
         @Override
         public long getArrayStoreSize()
         {
-            return sizeOf( ARRAY_STORE );
+            return sizeOf( databaseLayout.propertyArrayStore() );
         }
 
         @Override
         public long getNodeStoreSize()
         {
-            return sizeOf( NODE_STORE );
+            return sizeOf( databaseLayout.nodeStore() );
         }
 
         @Override
         public long getPropertyStoreSize()
         {
-            return sizeOf( PROPERTY_STORE );
+            return sizeOf( databaseLayout.propertyStore() );
         }
 
         @Override
         public long getRelationshipStoreSize()
         {
-            return sizeOf( RELATIONSHIP_STORE );
+            return sizeOf( databaseLayout.relationshipStore() );
         }
 
         @Override
         public long getStringStoreSize()
         {
-            return sizeOf( STRING_STORE );
+            return sizeOf( databaseLayout.propertyStringStore() );
         }
 
-        private long sizeOf( String name )
+        private long sizeOf( File file )
         {
-            return storePath == null ? 0 : FileUtils.size( fs, new File( storePath, name ) );
+            return databaseDirectory == null ? 0 : FileUtils.size( fs, file );
         }
     }
 }

@@ -57,10 +57,10 @@ import org.neo4j.bolt.v1.packstream.PackedOutputArray;
 import org.neo4j.bolt.v2.messaging.Neo4jPackV2;
 import org.neo4j.helpers.collection.MapUtil;
 import org.neo4j.kernel.api.exceptions.Status;
-import org.neo4j.kernel.impl.logging.LogService;
-import org.neo4j.kernel.impl.logging.NullLogService;
 import org.neo4j.kernel.impl.util.ValueUtils;
 import org.neo4j.logging.Log;
+import org.neo4j.logging.internal.LogService;
+import org.neo4j.logging.internal.NullLogService;
 import org.neo4j.values.AnyValue;
 import org.neo4j.values.virtual.MapValue;
 import org.neo4j.values.virtual.PathValue;
@@ -75,6 +75,7 @@ import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.refEq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -125,7 +126,7 @@ public class MessageDecoderTest
         channel.writeInbound( Unpooled.wrappedBuffer( serialize( packerUnderTest, new InitMessage( userAgent, authToken ) ) ) );
         channel.finishAndReleaseAll();
 
-        verify( stateMachine ).process( eq( new InitMessage( userAgent, authToken ) ), any() );
+        verify( stateMachine ).process( refEq( new InitMessage( userAgent, authToken ), "authToken" ), any() );
     }
 
     @Test

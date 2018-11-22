@@ -40,7 +40,7 @@ public abstract class NodeCursorTestBase<G extends KernelAPIReadTestSupport> ext
     private static long foo, bar, baz, barbaz, bare, gone;
 
     @Override
-    void createTestGraph( GraphDatabaseService graphDb )
+    public void createTestGraph( GraphDatabaseService graphDb )
     {
         Node deleted;
         try ( Transaction tx = graphDb.beginTx() )
@@ -108,6 +108,21 @@ public abstract class NodeCursorTestBase<G extends KernelAPIReadTestSupport> ext
                 assertEquals( "should access the correct node", id, nodes.nodeReference() );
                 assertFalse( "should only access a single node", nodes.next() );
             }
+        }
+    }
+
+    // This is functionality which is only required for the hacky db.schema not to leak real data
+    @Test
+    public void shouldNotAccessNegativeReferences()
+    {
+        // given
+        try ( NodeCursor node = cursors.allocateNodeCursor() )
+        {
+            // when
+            read.singleNode( -2L, node  );
+
+            // then
+            assertFalse( "should not access negative reference node", node.next() );
         }
     }
 

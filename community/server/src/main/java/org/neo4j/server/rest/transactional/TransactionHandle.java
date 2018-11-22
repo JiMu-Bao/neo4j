@@ -363,8 +363,9 @@ public class TransactionHandle implements TransactionTerminationHandle
         }
     }
 
-    private Result safelyExecute( Statement statement, boolean hasPeriodicCommit, TransactionalContext tc )
-            throws QueryExecutionKernelException
+    private Result safelyExecute( Statement statement,
+                                boolean hasPeriodicCommit,
+                                TransactionalContext tc ) throws QueryExecutionKernelException, IOException
     {
         try
         {

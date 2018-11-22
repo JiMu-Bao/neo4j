@@ -107,6 +107,12 @@ public class FakeClockJobScheduler extends FakeClock implements JobScheduler
     }
 
     @Override
+    public ExecutorService workStealingExecutorAsyncMode( Group group, int parallelism )
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public ThreadFactory threadFactory( Group group )
     {
         throw new UnsupportedOperationException();
@@ -172,6 +178,12 @@ public class FakeClockJobScheduler extends FakeClock implements JobScheduler
     public void shutdown()
     {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void close()
+    {
+        shutdown();
     }
 
     class JobHandle implements org.neo4j.scheduler.JobHandle

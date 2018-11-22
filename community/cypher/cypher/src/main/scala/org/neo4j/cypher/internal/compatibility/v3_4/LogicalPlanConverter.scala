@@ -34,9 +34,9 @@ import org.neo4j.cypher.internal.v3_4.expressions.{Expression => ExpressionV3_4,
 import org.neo4j.cypher.internal.v3_4.logical.plans.{LogicalPlan => LogicalPlanV3_4}
 import org.neo4j.cypher.internal.v3_4.logical.{plans => plansV3_4}
 import org.neo4j.cypher.internal.v3_4.{expressions => expressionsv3_4}
-import org.neo4j.cypher.internal.v3_5.logical.plans.{FieldSignature, ProcedureAccessMode, QualifiedName, LogicalPlan => LogicalPlanv3_5}
+import org.neo4j.cypher.internal.v3_5.logical.plans.{DoNotGetValue, FieldSignature, IndexOrderNone, IndexedProperty, ProcedureAccessMode, QualifiedName, UserFunctionSignature, LogicalPlan => LogicalPlanv3_5}
 import org.neo4j.cypher.internal.v3_5.logical.{plans => plansv3_5}
-import org.opencypher.v9_0.expressions.{PropertyKeyName, Expression => Expressionv3_5, LabelName => LabelNamev3_5, RelTypeName => RelTypeNamev3_5, SemanticDirection => SemanticDirectionv3_5}
+import org.opencypher.v9_0.expressions.{LogicalVariable, PropertyKeyName, Expression => Expressionv3_5, LabelName => LabelNamev3_5, RelTypeName => RelTypeNamev3_5, SemanticDirection => SemanticDirectionv3_5}
 import org.opencypher.v9_0.util.Rewritable.RewritableAny
 import org.opencypher.v9_0.util.attribution.IdGen
 import org.opencypher.v9_0.util.symbols.CypherType
@@ -94,6 +94,7 @@ object LogicalPlanConverter {
 
     private val rewriter: RewriterWithArgs = bottomUpWithArgs { before =>
       val rewritten = RewriterWithArgs.lift {
+
         case ( plan:plansV3_4.Selection, children: Seq[AnyRef]) =>
           plansv3_5.Selection(PredicateHelper.coercePredicates(children(0).asInstanceOf[Seq[Expressionv3_5]]),
                               children(1).asInstanceOf[LogicalPlanv3_5]
@@ -154,11 +155,58 @@ object LogicalPlanConverter {
             children(3).asInstanceOf[Expressionv3_5]
           )(ids.convertId(plan))
 
+        case (plan: plansV3_4.NodeIndexContainsScan, children: Seq[AnyRef]) =>
+          plansv3_5.NodeIndexContainsScan(
+            children(0).asInstanceOf[String],
+            children(1).asInstanceOf[expressionsv3_5.LabelToken],
+            IndexedProperty(children(2).asInstanceOf[expressionsv3_5.PropertyKeyToken], DoNotGetValue),
+            children(3).asInstanceOf[Expressionv3_5],
+            children(4).asInstanceOf[Set[String]],
+            IndexOrderNone
+          )(ids.convertId(plan))
+
+        case (plan: plansV3_4.NodeIndexEndsWithScan, children: Seq[AnyRef]) =>
+          plansv3_5.NodeIndexEndsWithScan(
+            children(0).asInstanceOf[String],
+            children(1).asInstanceOf[expressionsv3_5.LabelToken],
+            IndexedProperty(children(2).asInstanceOf[expressionsv3_5.PropertyKeyToken], DoNotGetValue),
+            children(3).asInstanceOf[Expressionv3_5],
+            children(4).asInstanceOf[Set[String]],
+            IndexOrderNone
+          )(ids.convertId(plan))
+
+        case (plan: plansV3_4.NodeIndexScan, children: Seq[AnyRef]) =>
+          plansv3_5.NodeIndexScan(
+            children(0).asInstanceOf[String],
+            children(1).asInstanceOf[expressionsv3_5.LabelToken],
+            IndexedProperty(children(2).asInstanceOf[expressionsv3_5.PropertyKeyToken], DoNotGetValue),
+            children(3).asInstanceOf[Set[String]],
+            IndexOrderNone
+          )(ids.convertId(plan))
+
+        case (plan: plansV3_4.NodeIndexSeek, children: Seq[AnyRef]) =>
+          plansv3_5.NodeIndexSeek(
+            children(0).asInstanceOf[String],
+            children(1).asInstanceOf[expressionsv3_5.LabelToken],
+            children(2).asInstanceOf[Seq[expressionsv3_5.PropertyKeyToken]].map(IndexedProperty(_, DoNotGetValue)),
+            children(3).asInstanceOf[plansv3_5.QueryExpression[expressionsv3_5.Expression]],
+            children(4).asInstanceOf[Set[String]],
+            IndexOrderNone
+          )(ids.convertId(plan))
+
+        case (plan: plansV3_4.NodeUniqueIndexSeek, children: Seq[AnyRef]) =>
+          plansv3_5.NodeUniqueIndexSeek(
+            children(0).asInstanceOf[String],
+            children(1).asInstanceOf[expressionsv3_5.LabelToken],
+            children(2).asInstanceOf[Seq[expressionsv3_5.PropertyKeyToken]].map(IndexedProperty(_, DoNotGetValue)),
+            children(3).asInstanceOf[plansv3_5.QueryExpression[expressionsv3_5.Expression]],
+            children(4).asInstanceOf[Set[String]],
+            IndexOrderNone
+          )(ids.convertId(plan))
+
+          // Fallthrough for all plans
         case (plan: plansV3_4.LogicalPlan, children: Seq[AnyRef]) =>
           convertVersion(oldLogicalPlanPackage, newLogicalPlanPackage, plan, children, ids.convertId(plan), classOf[IdGen])
-
-        case (inp: expressionsv3_4.InvalidNodePattern, children: Seq[AnyRef]) =>
-          new expressionsv3_5.InvalidNodePattern(children.head.asInstanceOf[Option[expressionsv3_5.Variable]].get)(helpers.as3_5(inp.position))
 
         case (item@(_: plansV3_4.PrefixSeekRangeWrapper |
                     _: plansV3_4.InequalitySeekRangeWrapper |
@@ -174,9 +222,50 @@ object LogicalPlanConverter {
         case (item: frontendV3_4.ast.ProcedureResultItem, children: Seq[AnyRef]) =>
           convertVersion(oldASTPackage, newASTPackage, item, children, helpers.as3_5(item.position), classOf[InputPosition])
 
+        case (funcV3_4@expressionsv3_4.FunctionInvocation(_, expressionsv3_4.FunctionName("timestamp"), _, _), _: Seq[AnyRef]) => {
+          val datetimeSignature = UserFunctionSignature(
+            QualifiedName(Seq(), "datetime"),
+            inputSignature = IndexedSeq.empty,
+            symbolsv3_5.CTDateTime,
+            deprecationInfo = None,
+            allowed = Array.empty,
+            description = None,
+            isAggregate = false,
+            id = None // will use by-name lookup for built-in functions for that came from a 3.4 plan, since timestamp is not a user-defined function in 3.4
+          )
+          val funcPosV3_5 = helpers.as3_5(funcV3_4.functionName.position)
+          val datetimeFuncV3_5 = plansv3_5.ResolvedFunctionInvocation(
+            QualifiedName(Seq(), "datetime"),
+            Some(datetimeSignature),
+            callArguments = IndexedSeq.empty
+          )(funcPosV3_5)
+
+          val epochMillisV3_5 = expressionsv3_5.Property(
+            datetimeFuncV3_5,
+            expressionsv3_5.PropertyKeyName("epochMillis")(funcPosV3_5)
+          )(funcPosV3_5)
+
+          epochMillisV3_5
+        }
+
+        case (item: expressionsv3_4.PatternComprehension, children: Seq[AnyRef]) =>
+          expressionsv3_5.PatternComprehension(
+            children(0).asInstanceOf[Option[LogicalVariable]],
+            children(1).asInstanceOf[expressionsv3_5.RelationshipsPattern],
+            children(2).asInstanceOf[Option[expressionsv3_5.Expression]],
+            children(3).asInstanceOf[expressionsv3_5.Expression]
+          )(helpers.as3_5(item.position), item.outerScope.map(v => expressionsv3_5.Variable(v.name)(helpers.as3_5(v.position))))
+
+        case (item: expressionsv3_4.MapProjection, children: Seq[AnyRef]) =>
+          expressionsv3_5.MapProjection(
+            children(0).asInstanceOf[expressionsv3_5.Variable],
+            children(1).asInstanceOf[Seq[expressionsv3_5.MapProjectionElement]]
+          )(helpers.as3_5(item.position), item.definitionPos.map(helpers.as3_5))
+
         case (item: plansV3_4.ResolvedCall, children: Seq[AnyRef]) =>
           convertVersion(oldLogicalPlanPackage, newLogicalPlanPackage, item, children, helpers.as3_5(item.position), classOf[InputPosition])
 
+          // Fallthrough for all ASTNodes
         case (expressionV3_4: utilv3_4.ASTNode, children: Seq[AnyRef]) =>
           convertVersion(oldExpressionPackage, newExpressionPackage, expressionV3_4, children, helpers.as3_5(expressionV3_4.position), classOf[InputPosition])
 
@@ -229,7 +318,6 @@ object LogicalPlanConverter {
         case (utilv3_4.Last(head), children: Seq[AnyRef]) => utilv3_5.Last(children(0))
 
         case ( _:plansV3_4.ProcedureSignature, children: Seq[AnyRef]) =>
-          // TODO: Add the additional `eager` parameter when upgrading to next 3.3 release
          plansv3_5.ProcedureSignature(children(0).asInstanceOf[QualifiedName],
                                       children(1).asInstanceOf[IndexedSeq[FieldSignature]],
                                       children(2).asInstanceOf[Option[IndexedSeq[FieldSignature]]],
@@ -237,8 +325,8 @@ object LogicalPlanConverter {
                                       children(4).asInstanceOf[ProcedureAccessMode],
                                       children(5).asInstanceOf[Option[String]],
                                       children(6).asInstanceOf[Option[String]],
-                                      false,  // replace with correct value after next 3.3 release
-                                      children(7).asInstanceOf[Option[Int]])
+                                      children(7).asInstanceOf[Boolean],
+                                      children(8).asInstanceOf[Option[Int]])
 
         case ( _:plansV3_4.UserFunctionSignature, children: Seq[AnyRef]) =>
           plansv3_5.UserFunctionSignature(children(0).asInstanceOf[QualifiedName],

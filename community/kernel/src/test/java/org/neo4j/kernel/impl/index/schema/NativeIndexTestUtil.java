@@ -36,6 +36,7 @@ import org.neo4j.index.internal.gbptree.Hit;
 import org.neo4j.index.internal.gbptree.Layout;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
 import org.neo4j.io.pagecache.PageCache;
+import org.neo4j.kernel.api.index.IndexDirectoryStructure;
 import org.neo4j.kernel.api.index.IndexEntryUpdate;
 import org.neo4j.kernel.api.index.IndexProvider;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
@@ -53,10 +54,11 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.rules.RuleChain.outerRule;
 import static org.neo4j.index.internal.gbptree.GBPTree.NO_HEADER_READER;
 import static org.neo4j.index.internal.gbptree.GBPTree.NO_HEADER_WRITER;
+import static org.neo4j.kernel.api.index.IndexDirectoryStructure.directoriesByProvider;
 import static org.neo4j.kernel.impl.index.schema.NativeIndexKey.Inclusion.NEUTRAL;
 import static org.neo4j.test.rule.PageCacheRule.config;
 
-public abstract class NativeIndexTestUtil<KEY extends NativeIndexSingleValueKey<KEY>,VALUE extends NativeIndexValue>
+public abstract class NativeIndexTestUtil<KEY extends NativeIndexKey<KEY>,VALUE extends NativeIndexValue>
 {
     static final long NON_EXISTENT_ENTITY_ID = 1_000_000_000;
 
@@ -65,23 +67,25 @@ public abstract class NativeIndexTestUtil<KEY extends NativeIndexSingleValueKey<
     private final PageCacheRule pageCacheRule = new PageCacheRule( config().withAccessChecks( true ) );
     protected final RandomRule random = new RandomRule();
     @Rule
-    public final RuleChain rules = outerRule( fs ).around( directory ).around( pageCacheRule ).around( random );
+    public final RuleChain rules = outerRule( random ).around( fs ).around( directory ).around( pageCacheRule );
 
     StoreIndexDescriptor indexDescriptor;
-    LayoutTestUtil<KEY,VALUE> layoutUtil;
-    Layout<KEY,VALUE> layout;
+    ValueCreatorUtil<KEY,VALUE> valueCreatorUtil;
+    IndexLayout<KEY,VALUE> layout;
+    IndexDirectoryStructure indexDirectoryStructure;
     private File indexFile;
     PageCache pageCache;
     IndexProvider.Monitor monitor = IndexProvider.Monitor.EMPTY;
-    long indexId = 1;
 
     @Before
-    public void setup()
+    public void setup() throws IOException
     {
-        layoutUtil = createLayoutTestUtil();
-        indexDescriptor = layoutUtil.indexDescriptor();
-        layout = layoutUtil.createLayout();
-        indexFile = directory.file( "index" );
+        valueCreatorUtil = createValueCreatorUtil();
+        indexDescriptor = valueCreatorUtil.indexDescriptor();
+        layout = createLayout();
+        indexDirectoryStructure = directoriesByProvider( directory.directory( "root" ) ).forProvider( indexDescriptor.providerDescriptor() );
+        indexFile = indexDirectoryStructure.directoryForIndex( indexDescriptor.getId() );
+        fs.mkdirs( indexFile.getParentFile() );
         pageCache = pageCacheRule.getPageCache( fs );
     }
 
@@ -90,11 +94,13 @@ public abstract class NativeIndexTestUtil<KEY extends NativeIndexSingleValueKey<
         return indexFile;
     }
 
-    abstract LayoutTestUtil<KEY,VALUE> createLayoutTestUtil();
+    abstract ValueCreatorUtil<KEY,VALUE> createValueCreatorUtil();
+
+    abstract IndexLayout<KEY,VALUE> createLayout();
 
     private void copyValue( VALUE value, VALUE intoValue )
     {
-        layoutUtil.copyValue( value, intoValue );
+        valueCreatorUtil.copyValue( value, intoValue );
     }
 
     void verifyUpdates( IndexEntryUpdate<IndexDescriptor>[] updates )
@@ -116,7 +122,7 @@ public abstract class NativeIndexTestUtil<KEY extends NativeIndexSingleValueKey<
             int keyCompare = layout.compare( h1.key(), h2.key() );
             if ( keyCompare == 0 )
             {
-                return layoutUtil.compareIndexedPropertyValue( h1.key(), h2.key() );
+                return valueCreatorUtil.compareIndexedPropertyValue( h1.key(), h2.key() );
             }
             else
             {
@@ -126,20 +132,20 @@ public abstract class NativeIndexTestUtil<KEY extends NativeIndexSingleValueKey<
         assertSameHits( expectedHits, actualHits.toArray( new Hit[0] ), hitComparator );
     }
 
-    GBPTree<KEY,VALUE> getTree() throws IOException
+    GBPTree<KEY,VALUE> getTree()
     {
         return new GBPTree<>( pageCache, getIndexFile(), layout, 0, GBPTree.NO_MONITOR,
-                NO_HEADER_READER, NO_HEADER_WRITER, RecoveryCleanupWorkCollector.IMMEDIATE );
+                NO_HEADER_READER, NO_HEADER_WRITER, RecoveryCleanupWorkCollector.immediate() );
     }
 
     private RawCursor<Hit<KEY,VALUE>, IOException> scan( GBPTree<KEY,VALUE> tree ) throws IOException
     {
         KEY lowest = layout.newKey();
         lowest.initialize( Long.MIN_VALUE );
-        lowest.initValueAsLowest( ValueGroup.UNKNOWN );
+        lowest.initValueAsLowest( 0, ValueGroup.UNKNOWN );
         KEY highest = layout.newKey();
         highest.initialize( Long.MAX_VALUE );
-        highest.initValueAsHighest( ValueGroup.UNKNOWN );
+        highest.initValueAsHighest( 0, ValueGroup.UNKNOWN );
         return tree.seek( lowest, highest );
     }
 
@@ -156,8 +162,7 @@ public abstract class NativeIndexTestUtil<KEY extends NativeIndexSingleValueKey<
         {
             Hit<KEY,VALUE> expected = expectedHits[i];
             Hit<KEY,VALUE> actual = actualHits[i];
-            assertTrue( "Hits differ on item number " + i + ". Expected " + expected + " but was " + actual,
-                    comparator.compare( expected, actual ) == 0 );
+            assertEquals( "Hits differ on item number " + i + ". Expected " + expected + " but was " + actual, 0, comparator.compare( expected, actual ) );
         }
     }
 
@@ -202,5 +207,12 @@ public abstract class NativeIndexTestUtil<KEY extends NativeIndexSingleValueKey<
     void assertFileNotPresent()
     {
         assertFalse( fs.fileExists( getIndexFile() ) );
+    }
+
+    // Useful when debugging
+    void setSeed( long seed )
+    {
+        random.setSeed( seed );
+        random.reset();
     }
 }

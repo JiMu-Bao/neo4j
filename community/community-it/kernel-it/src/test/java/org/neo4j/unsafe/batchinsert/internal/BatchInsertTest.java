@@ -59,6 +59,7 @@ import org.neo4j.helpers.collection.Iterables;
 import org.neo4j.helpers.collection.MapUtil;
 import org.neo4j.helpers.collection.Pair;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
+import org.neo4j.internal.kernel.api.schema.IndexProviderDescriptor;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.kernel.api.index.IndexAccessor;
 import org.neo4j.kernel.api.index.IndexPopulator;
@@ -68,6 +69,7 @@ import org.neo4j.kernel.api.labelscan.LabelScanStore;
 import org.neo4j.kernel.api.schema.index.TestIndexDescriptorFactory;
 import org.neo4j.kernel.extension.KernelExtensionFactory;
 import org.neo4j.kernel.impl.MyRelTypes;
+import org.neo4j.kernel.impl.api.index.TestIndexProviderDescriptor;
 import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.kernel.impl.api.scan.FullStoreChangeStream;
 import org.neo4j.kernel.impl.index.labelscan.NativeLabelScanStore;
@@ -125,8 +127,6 @@ import static org.neo4j.helpers.collection.Iterators.asSet;
 import static org.neo4j.helpers.collection.Iterators.iterator;
 import static org.neo4j.helpers.collection.MapUtil.map;
 import static org.neo4j.helpers.collection.MapUtil.stringMap;
-import static org.neo4j.kernel.api.impl.schema.NativeLuceneFusionIndexProviderFactory20.DESCRIPTOR;
-import static org.neo4j.kernel.api.impl.schema.NativeLuceneFusionIndexProviderFactory20.KEY;
 import static org.neo4j.kernel.api.index.IndexEntryUpdate.add;
 import static org.neo4j.kernel.impl.api.index.SchemaIndexTestHelper.singleInstanceIndexProviderFactory;
 import static org.neo4j.kernel.impl.store.RecordStore.getRecord;
@@ -138,13 +138,15 @@ import static org.neo4j.test.mockito.matcher.Neo4jMatchers.inTx;
 @RunWith( Parameterized.class )
 public class BatchInsertTest
 {
+    private static final IndexProviderDescriptor DESCRIPTOR = TestIndexProviderDescriptor.PROVIDER_DESCRIPTOR;
+    private static final String KEY = DESCRIPTOR.getKey();
     private static final String INTERNAL_LOG_FILE = "debug.log";
     private final int denseNodeThreshold;
     // This is the assumed internal index descriptor based on knowledge of what ids get assigned
     private static final IndexDescriptor internalIndex = TestIndexDescriptorFactory.forLabel( 0, 0 );
     private static final IndexDescriptor internalUniqueIndex = TestIndexDescriptorFactory.uniqueForLabel( 0, 0 );
 
-    @Parameterized.Parameters
+    @Parameterized.Parameters( name = "{index} denseNodeThreshold={0}" )
     public static Collection<Integer> data()
     {
         return Arrays.asList( 5, parseInt( GraphDatabaseSettings.dense_node_threshold.getDefaultValue() ) );
@@ -711,7 +713,7 @@ public class BatchInsertTest
         IndexDefinition definition = inserter.createDeferredSchemaIndex( label( "Hacker" ) ).on( "handle" ).create();
 
         // THEN
-        assertEquals( "Hacker", definition.getLabel().name() );
+        assertEquals( "Hacker", single( definition.getLabels() ).name() );
         assertEquals( asCollection( iterator( "handle" ) ), Iterables.asCollection( definition.getPropertyKeys() ) );
         inserter.shutdown();
     }
@@ -884,7 +886,7 @@ public class BatchInsertTest
         when( provider.getOnlineAccessor( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) ) ).thenReturn( accessor );
 
         BatchInserter inserter = newBatchInserterWithIndexProvider(
-                singleInstanceIndexProviderFactory( KEY, provider ) );
+                singleInstanceIndexProviderFactory( KEY, provider ), provider.getProviderDescriptor() );
 
         inserter.createDeferredSchemaIndex( label( "Hacker" ) ).on( "handle" ).create();
 
@@ -919,7 +921,7 @@ public class BatchInsertTest
         when( provider.getOnlineAccessor( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) ) ).thenReturn( accessor );
 
         BatchInserter inserter = newBatchInserterWithIndexProvider(
-                singleInstanceIndexProviderFactory( KEY, provider ) );
+                singleInstanceIndexProviderFactory( KEY, provider ), provider.getProviderDescriptor() );
 
         inserter.createDeferredConstraint( label( "Hacker" ) ).assertPropertyIsUnique( "handle" ).create();
 
@@ -956,7 +958,7 @@ public class BatchInsertTest
         when( provider.getOnlineAccessor( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) ) ).thenReturn( accessor );
 
         BatchInserter inserter = newBatchInserterWithIndexProvider(
-                singleInstanceIndexProviderFactory( KEY, provider ) );
+                singleInstanceIndexProviderFactory( KEY, provider ), provider.getProviderDescriptor() );
 
         long boggle = inserter.createNode( map( "handle", "b0ggl3" ), label( "Hacker" ) );
 
@@ -1394,9 +1396,11 @@ public class BatchInsertTest
         return BatchInserters.inserter( localTestDirectory.databaseDir(), fileSystemRule.get(), configuration() );
     }
 
-    private BatchInserter newBatchInserterWithIndexProvider( KernelExtensionFactory<?> provider ) throws Exception
+    private BatchInserter newBatchInserterWithIndexProvider( KernelExtensionFactory<?> provider, IndexProviderDescriptor providerDescriptor ) throws Exception
     {
-        return BatchInserters.inserter( localTestDirectory.databaseDir(), fileSystemRule.get(), configuration(), singletonList( provider ) );
+        Map<String,String> configuration = configuration();
+        configuration.put( GraphDatabaseSettings.default_schema_provider.name(), providerDescriptor.name() );
+        return BatchInserters.inserter( localTestDirectory.databaseDir(), fileSystemRule.get(), configuration, singletonList( provider ) );
     }
 
     private GraphDatabaseService switchToEmbeddedGraphDatabaseService( BatchInserter inserter )
@@ -1404,7 +1408,7 @@ public class BatchInsertTest
         inserter.shutdown();
         TestGraphDatabaseFactory factory = new TestGraphDatabaseFactory();
         factory.setFileSystem( fileSystemRule.get() );
-        return factory.newImpermanentDatabaseBuilder( localTestDirectory.storeDir() )
+        return factory.newImpermanentDatabaseBuilder( localTestDirectory.databaseDir() )
                 // Shouldn't be necessary to set dense node threshold since it's a stick config
                 .setConfig( configuration() )
                 .newGraphDatabase();
@@ -1413,8 +1417,8 @@ public class BatchInsertTest
     private LabelScanStore getLabelScanStore()
     {
         DefaultFileSystemAbstraction fs = fileSystemRule.get();
-        return new NativeLabelScanStore( pageCacheRule.getPageCache( fs ), localTestDirectory.databaseDir(), fs,
-                FullStoreChangeStream.EMPTY, true, new Monitors(), RecoveryCleanupWorkCollector.IMMEDIATE );
+        return new NativeLabelScanStore( pageCacheRule.getPageCache( fs ), localTestDirectory.databaseLayout(), fs,
+                FullStoreChangeStream.EMPTY, true, new Monitors(), RecoveryCleanupWorkCollector.immediate() );
     }
 
     private void assertLabelScanStoreContains( LabelScanStore labelScanStore, int labelId, long... nodes )
@@ -1463,7 +1467,7 @@ public class BatchInsertTest
                 .thenReturn( populator );
 
         BatchInserter inserter = newBatchInserterWithIndexProvider(
-                singleInstanceIndexProviderFactory( KEY, provider ) );
+                singleInstanceIndexProviderFactory( KEY, provider ), provider.getProviderDescriptor() );
 
         inserter.createDeferredSchemaIndex( label("Hacker") ).on( "handle" ).create();
         long nodeId = inserter.createNode( map( "handle", "Jakewins" ), label( "Hacker" ) );

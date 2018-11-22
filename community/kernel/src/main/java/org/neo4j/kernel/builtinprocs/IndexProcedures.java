@@ -19,6 +19,7 @@
  */
 package org.neo4j.kernel.builtinprocs;
 
+import java.util.Iterator;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -29,6 +30,7 @@ import org.neo4j.internal.kernel.api.IndexReference;
 import org.neo4j.internal.kernel.api.InternalIndexState;
 import org.neo4j.internal.kernel.api.SchemaWrite;
 import org.neo4j.internal.kernel.api.TokenRead;
+import org.neo4j.internal.kernel.api.Transaction;
 import org.neo4j.internal.kernel.api.exceptions.InvalidTransactionTypeKernelException;
 import org.neo4j.internal.kernel.api.exceptions.ProcedureException;
 import org.neo4j.internal.kernel.api.exceptions.schema.IllegalTokenNameException;
@@ -42,6 +44,8 @@ import org.neo4j.kernel.api.schema.LabelSchemaDescriptor;
 import org.neo4j.kernel.api.schema.SchemaDescriptorFactory;
 import org.neo4j.kernel.impl.api.index.IndexingService;
 import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingMode;
+import org.neo4j.register.Register;
+import org.neo4j.register.Registers;
 
 public class IndexProcedures implements AutoCloseable
 {
@@ -88,19 +92,17 @@ public class IndexProcedures implements AutoCloseable
     public Stream<BuiltInProcedures.SchemaIndexInfo> createIndex( String indexSpecification, String providerName ) throws ProcedureException
     {
         return createIndex( indexSpecification, providerName, "index created",
-                ( schemaWrite, descriptor, provider ) -> schemaWrite.indexCreate( descriptor, Optional.of( provider ), Optional.empty() ) );
+                ( schemaWrite, descriptor, provider ) -> schemaWrite.indexCreate( descriptor, provider, Optional.empty() ) );
     }
 
     public Stream<BuiltInProcedures.SchemaIndexInfo> createUniquePropertyConstraint( String indexSpecification, String providerName ) throws ProcedureException
     {
-        return createIndex( indexSpecification, providerName, "uniqueness constraint online",
-                ( schemaWrite, descriptor, provider ) -> schemaWrite.uniquePropertyConstraintCreate( descriptor, Optional.of( provider ) ) );
+        return createIndex( indexSpecification, providerName, "uniqueness constraint online", SchemaWrite::uniquePropertyConstraintCreate );
     }
 
     public Stream<BuiltInProcedures.SchemaIndexInfo> createNodeKey( String indexSpecification, String providerName ) throws ProcedureException
     {
-        return createIndex( indexSpecification, providerName, "node key constraint online",
-                ( schemaWrite, descriptor, provider ) -> schemaWrite.nodeKeyConstraintCreate( descriptor, Optional.of( provider ) ) );
+        return createIndex( indexSpecification, providerName, "node key constraint online", SchemaWrite::nodeKeyConstraintCreate );
     }
 
     private Stream<BuiltInProcedures.SchemaIndexInfo> createIndex( String indexSpecification, String providerName, String statusMessage,
@@ -123,7 +125,7 @@ public class IndexProcedures implements AutoCloseable
         }
     }
 
-    private void assertProviderNameNotNull( String providerName ) throws ProcedureException
+    private static void assertProviderNameNotNull( String providerName ) throws ProcedureException
     {
         if ( providerName == null )
         {
@@ -131,12 +133,12 @@ public class IndexProcedures implements AutoCloseable
         }
     }
 
-    private String indexProviderNullMessage()
+    private static String indexProviderNullMessage()
     {
         return "Could not create index with specified index provider being null.";
     }
 
-    private IndexSpecifier parse( String specification )
+    private static IndexSpecifier parse( String specification )
     {
         return new IndexSpecifier( specification );
     }

@@ -28,6 +28,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -55,7 +56,6 @@ import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.helpers.collection.PrefetchingIterator;
 import org.neo4j.io.fs.FileUtils;
 import org.neo4j.kernel.impl.storageengine.impl.recordstorage.RecordStorageEngine;
-import org.neo4j.kernel.impl.store.MetaDataStore;
 import org.neo4j.kernel.impl.store.NeoStores;
 import org.neo4j.kernel.impl.store.StoreType;
 import org.neo4j.kernel.impl.store.format.standard.Standard;
@@ -93,7 +93,6 @@ import static org.neo4j.helpers.collection.Iterators.count;
 import static org.neo4j.helpers.collection.MapUtil.store;
 import static org.neo4j.helpers.collection.MapUtil.stringMap;
 import static org.neo4j.io.fs.FileUtils.writeToFile;
-import static org.neo4j.kernel.impl.store.MetaDataStore.DEFAULT_NAME;
 import static org.neo4j.tooling.ImportTool.MULTI_FILE_DELIMITER;
 import static org.neo4j.unsafe.impl.batchimport.Configuration.BAD_FILE_NAME;
 
@@ -327,8 +326,7 @@ public class ImportToolTest
                         continue;
                     }
 
-                    assertTrue( "Wrong value for " + key,
-                            expected == Double.valueOf( node.getProperty( key ).toString() ) );
+                    assertEquals( "Wrong value for " + key, expected, Double.valueOf( node.getProperty( key ).toString() ), 0.0 );
                 }
             }
 
@@ -1080,7 +1078,7 @@ public class ImportToolTest
         // GIVEN
         List<String> nodeIds = nodeIds();
         Configuration config = Configuration.COMMAS;
-        Charset charset = Charset.forName( "UTF-16" );
+        Charset charset = StandardCharsets.UTF_16;
 
         // WHEN
         importTool(
@@ -1311,7 +1309,7 @@ public class ImportToolTest
         {
             if ( storeType.isRecordStore() )
             {
-                new File( dbRule.databaseDirectory(), DEFAULT_NAME + storeType.getStoreName() ).delete();
+                dbRule.databaseLayout().file( storeType.getDatabaseFile() ).forEach( File::delete );
             }
         }
     }
@@ -1943,7 +1941,7 @@ public class ImportToolTest
             {
                 if ( storeType.isRecordStore() )
                 {
-                    assertTrue( new File( databaseDir, MetaDataStore.DEFAULT_NAME + storeType.getStoreName() ).exists() );
+                    dbRule.databaseLayout().file( storeType.getDatabaseFile() ).forEach( f -> assertTrue( f.exists() ) );
                 }
             }
 
@@ -2389,12 +2387,12 @@ public class ImportToolTest
 
     private File file( String localname )
     {
-        return new File( dbRule.databaseDirectory(), localname );
+        return dbRule.databaseLayout().file( localname );
     }
 
     private File badFile()
     {
-        return new File( dbRule.databaseDirectory(), BAD_FILE_NAME );
+        return dbRule.databaseLayout().file( BAD_FILE_NAME );
     }
 
     private void writeRelationshipHeader( PrintStream writer, Configuration config,

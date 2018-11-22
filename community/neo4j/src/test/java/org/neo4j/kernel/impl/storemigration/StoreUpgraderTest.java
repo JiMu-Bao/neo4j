@@ -19,6 +19,7 @@
  */
 package org.neo4j.kernel.impl.storemigration;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -37,11 +38,12 @@ import java.util.List;
 
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.tracing.cursor.context.EmptyVersionContextSupplier;
 import org.neo4j.kernel.api.index.IndexProvider;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.logging.NullLogService;
+import org.neo4j.kernel.configuration.Settings;
 import org.neo4j.kernel.impl.store.MetaDataStore;
 import org.neo4j.kernel.impl.store.NeoStores;
 import org.neo4j.kernel.impl.store.StoreFactory;
@@ -66,6 +68,9 @@ import org.neo4j.kernel.monitoring.Monitors;
 import org.neo4j.kernel.recovery.LogTailScanner;
 import org.neo4j.logging.AssertableLogProvider;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.logging.internal.NullLogService;
+import org.neo4j.scheduler.JobScheduler;
+import org.neo4j.scheduler.ThreadPoolJobScheduler;
 import org.neo4j.test.rule.PageCacheRule;
 import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.test.rule.fs.DefaultFileSystemRule;
@@ -103,11 +108,12 @@ public class StoreUpgraderTest
                                                 .around( pageCacheRule )
                                                 .around( directory );
 
-    private File dbDirectory;
+    private DatabaseLayout databaseLayout;
     private final FileSystemAbstraction fileSystem = fileSystemRule.get();
+    private JobScheduler jobScheduler;
     private final RecordFormats formats;
 
-    private final Config allowMigrateConfig = Config.defaults( GraphDatabaseSettings.allow_upgrade, "true" );
+    private final Config allowMigrateConfig = Config.defaults( GraphDatabaseSettings.allow_upgrade, Settings.TRUE );
 
     public StoreUpgraderTest( RecordFormats formats )
     {
@@ -123,10 +129,17 @@ public class StoreUpgraderTest
     @Before
     public void prepareDb() throws IOException
     {
+        jobScheduler = new ThreadPoolJobScheduler();
         String version = formats.storeVersion();
-        dbDirectory = directory.directory( "db_" + version );
+        databaseLayout = directory.databaseLayout( "db_" + version );
         File prepareDirectory = directory.directory( "prepare_" + version );
-        prepareSampleDatabase( version, fileSystem, dbDirectory, prepareDirectory );
+        prepareSampleDatabase( version, fileSystem, databaseLayout, prepareDirectory );
+    }
+
+    @After
+    public void tearDown() throws Exception
+    {
+        jobScheduler.close();
     }
 
     @Test
@@ -140,7 +153,7 @@ public class StoreUpgraderTest
 
         try
         {
-            newUpgrader( upgradableDatabase, deniedMigrationConfig, pageCache ).migrateIfNeeded( dbDirectory );
+            newUpgrader( upgradableDatabase, deniedMigrationConfig, pageCache ).migrateIfNeeded( databaseLayout );
             fail( "Should throw exception" );
         }
         catch ( UpgradeNotAllowedByConfigurationException e )
@@ -155,15 +168,15 @@ public class StoreUpgraderTest
     {
         File comparisonDirectory = directory.directory(
                 "shouldRefuseToUpgradeIfAnyOfTheStoresWereNotShutDownCleanly-comparison" );
-        removeCheckPointFromTxLog( fileSystem, dbDirectory );
+        removeCheckPointFromTxLog( fileSystem, databaseLayout.databaseDirectory() );
         fileSystem.deleteRecursively( comparisonDirectory );
-        fileSystem.copyRecursively( dbDirectory, comparisonDirectory );
+        fileSystem.copyRecursively( databaseLayout.databaseDirectory(), comparisonDirectory );
         PageCache pageCache = pageCacheRule.getPageCache( fileSystem );
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( pageCache );
 
         try
         {
-            newUpgrader( upgradableDatabase, pageCache ).migrateIfNeeded( dbDirectory );
+            newUpgrader( upgradableDatabase, pageCache ).migrateIfNeeded( databaseLayout );
             fail( "Should throw exception" );
         }
         catch ( StoreUpgrader.UnableToUpgradeException e )
@@ -171,7 +184,7 @@ public class StoreUpgraderTest
             // expected
         }
 
-        verifyFilesHaveSameContent( fileSystem, comparisonDirectory, dbDirectory );
+        verifyFilesHaveSameContent( fileSystem, comparisonDirectory, databaseLayout.databaseDirectory() );
     }
 
     @Test
@@ -180,15 +193,15 @@ public class StoreUpgraderTest
     {
         File comparisonDirectory = directory.directory(
                 "shouldRefuseToUpgradeIfAllOfTheStoresWereNotShutDownCleanly-comparison" );
-        removeCheckPointFromTxLog( fileSystem, dbDirectory );
+        removeCheckPointFromTxLog( fileSystem, databaseLayout.databaseDirectory() );
         fileSystem.deleteRecursively( comparisonDirectory );
-        fileSystem.copyRecursively( dbDirectory, comparisonDirectory );
+        fileSystem.copyRecursively( databaseLayout.databaseDirectory(), comparisonDirectory );
         PageCache pageCache = pageCacheRule.getPageCache( fileSystem );
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( pageCache );
 
         try
         {
-            newUpgrader( upgradableDatabase, pageCache ).migrateIfNeeded( dbDirectory );
+            newUpgrader( upgradableDatabase, pageCache ).migrateIfNeeded( databaseLayout );
             fail( "Should throw exception" );
         }
         catch ( StoreUpgrader.UnableToUpgradeException e )
@@ -196,7 +209,7 @@ public class StoreUpgraderTest
             // expected
         }
 
-        verifyFilesHaveSameContent( fileSystem, comparisonDirectory, dbDirectory );
+        verifyFilesHaveSameContent( fileSystem, comparisonDirectory, databaseLayout.databaseDirectory() );
     }
 
     @Test
@@ -206,7 +219,7 @@ public class StoreUpgraderTest
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( pageCache );
 
         String versionToMigrateTo = upgradableDatabase.currentVersion();
-        String versionToMigrateFrom = upgradableDatabase.checkUpgradable( dbDirectory ).storeVersion();
+        String versionToMigrateFrom = upgradableDatabase.checkUpgradable( databaseLayout ).storeVersion();
 
         // GIVEN
         {
@@ -217,7 +230,7 @@ public class StoreUpgraderTest
             // WHEN
             try
             {
-                upgrader.migrateIfNeeded( dbDirectory );
+                upgrader.migrateIfNeeded( databaseLayout );
                 fail( "should have thrown" );
             }
             catch ( UnableToUpgradeException e )
@@ -233,16 +246,16 @@ public class StoreUpgraderTest
             StoreUpgrader upgrader = newUpgrader( upgradableDatabase, pageCache );
             StoreMigrationParticipant observingParticipant = Mockito.mock( StoreMigrationParticipant.class );
             upgrader.addParticipant( observingParticipant );
-            upgrader.migrateIfNeeded( dbDirectory );
+            upgrader.migrateIfNeeded( databaseLayout );
 
             // THEN
-            verify( observingParticipant, Mockito.never() ).migrate( any( File.class ), any( File.class ),
+            verify( observingParticipant, Mockito.never() ).migrate( any( DatabaseLayout.class ), any( DatabaseLayout.class ),
                     any( ProgressReporter.class ), eq( versionToMigrateFrom ), eq( versionToMigrateTo ) );
             verify( observingParticipant, Mockito.times( 1 ) ).
-                    moveMigratedFiles( any( File.class ), any( File.class ), eq( versionToMigrateFrom ),
+                    moveMigratedFiles( any( DatabaseLayout.class ), any( DatabaseLayout.class ), eq( versionToMigrateFrom ),
                             eq( versionToMigrateTo ) );
 
-            verify( observingParticipant, Mockito.times( 1 ) ).cleanup( any( File.class ) );
+            verify( observingParticipant, Mockito.times( 1 ) ).cleanup( any( DatabaseLayout.class ) );
         }
     }
 
@@ -250,16 +263,15 @@ public class StoreUpgraderTest
     public void upgradedNeoStoreShouldHaveNewUpgradeTimeAndUpgradeId() throws Exception
     {
         // Given
-        fileSystem.deleteFile( new File( dbDirectory, INTERNAL_LOG_FILE ) );
+        fileSystem.deleteFile( databaseLayout.file( INTERNAL_LOG_FILE ) );
         PageCache pageCache = pageCacheRule.getPageCache( fileSystem );
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( pageCache );
 
         // When
-        newUpgrader( upgradableDatabase, allowMigrateConfig, pageCache ).migrateIfNeeded( dbDirectory );
+        newUpgrader( upgradableDatabase, allowMigrateConfig, pageCache ).migrateIfNeeded( databaseLayout );
 
         // Then
-        StoreFactory factory = new StoreFactory(
-                dbDirectory, allowMigrateConfig, new DefaultIdGeneratorFactory( fileSystem ), pageCache, fileSystem,
+        StoreFactory factory = new StoreFactory( databaseLayout, allowMigrateConfig, new DefaultIdGeneratorFactory( fileSystem ), pageCache, fileSystem,
                 NullLogProvider.getInstance(), EmptyVersionContextSupplier.EMPTY );
         try ( NeoStores neoStores = factory.openAllNeoStores() )
         {
@@ -277,12 +289,12 @@ public class StoreUpgraderTest
     public void upgradeShouldNotLeaveLeftoverAndMigrationDirs() throws Exception
     {
         // Given
-        fileSystem.deleteFile( new File( dbDirectory, INTERNAL_LOG_FILE ) );
+        fileSystem.deleteFile( databaseLayout.file( INTERNAL_LOG_FILE ) );
         PageCache pageCache = pageCacheRule.getPageCache( fileSystem );
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( pageCache );
 
         // When
-        newUpgrader( upgradableDatabase, allowMigrateConfig, pageCache ).migrateIfNeeded( dbDirectory );
+        newUpgrader( upgradableDatabase, allowMigrateConfig, pageCache ).migrateIfNeeded( databaseLayout );
 
         // Then
         assertThat( migrationHelperDirs(), is( emptyCollectionOf( File.class ) ) );
@@ -298,7 +310,7 @@ public class StoreUpgraderTest
         // When
         AssertableLogProvider logProvider = new AssertableLogProvider();
         newUpgrader( upgradableDatabase, pageCache, allowMigrateConfig,
-                new VisibleMigrationProgressMonitor( logProvider.getLog( "test" ) ) ).migrateIfNeeded( dbDirectory );
+                new VisibleMigrationProgressMonitor( logProvider.getLog( "test" ) ) ).migrateIfNeeded( databaseLayout );
 
         // Then
         logProvider.assertContainsLogCallContaining( "Store files" );
@@ -311,18 +323,18 @@ public class StoreUpgraderTest
     public void upgraderShouldCleanupLegacyLeftoverAndMigrationDirs() throws Exception
     {
         // Given
-        fileSystem.deleteFile( new File( dbDirectory, INTERNAL_LOG_FILE ) );
-        fileSystem.mkdir( new File( dbDirectory, StoreUpgrader.MIGRATION_DIRECTORY ) );
-        fileSystem.mkdir( new File( dbDirectory, StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY ) );
-        fileSystem.mkdir( new File( dbDirectory, StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY + "_1" ) );
-        fileSystem.mkdir( new File( dbDirectory, StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY + "_2" ) );
-        fileSystem.mkdir( new File( dbDirectory, StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY + "_42" ) );
+        fileSystem.deleteFile( databaseLayout.file( INTERNAL_LOG_FILE ) );
+        fileSystem.mkdir( databaseLayout.file( StoreUpgrader.MIGRATION_DIRECTORY ) );
+        fileSystem.mkdir( databaseLayout.file( StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY ) );
+        fileSystem.mkdir( databaseLayout.file( StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY + "_1" ) );
+        fileSystem.mkdir( databaseLayout.file( StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY + "_2" ) );
+        fileSystem.mkdir( databaseLayout.file( StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY + "_42" ) );
         PageCache pageCache = pageCacheRule.getPageCache( fileSystem );
 
         // When
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( pageCache );
         StoreUpgrader storeUpgrader = newUpgrader( upgradableDatabase, pageCache );
-        storeUpgrader.migrateIfNeeded( dbDirectory );
+        storeUpgrader.migrateIfNeeded( databaseLayout );
 
         // Then
         assertThat( migrationHelperDirs(), is( emptyCollectionOf( File.class ) ) );
@@ -337,16 +349,16 @@ public class StoreUpgraderTest
         assertThat( storeUpgrader.getParticipants(), hasSize( 3 ) );
     }
 
-    protected void prepareSampleDatabase( String version, FileSystemAbstraction fileSystem, File dbDirectory,
+    protected void prepareSampleDatabase( String version, FileSystemAbstraction fileSystem, DatabaseLayout databaseLayout,
             File databaseDirectory ) throws IOException
     {
-        MigrationTestUtils.prepareSampleLegacyDatabase( version, fileSystem, dbDirectory, databaseDirectory );
+        MigrationTestUtils.prepareSampleLegacyDatabase( version, fileSystem, databaseLayout.databaseDirectory(), databaseDirectory );
     }
 
     private UpgradableDatabase getUpgradableDatabase( PageCache pageCache ) throws IOException
     {
         VersionAwareLogEntryReader<ReadableClosablePositionAwareChannel> entryReader = new VersionAwareLogEntryReader<>();
-        LogFiles logFiles = LogFilesBuilder.logFilesBasedOnlyBuilder( dbDirectory,fileSystem )
+        LogFiles logFiles = LogFilesBuilder.logFilesBasedOnlyBuilder( databaseLayout.databaseDirectory(), fileSystem )
                 .withLogEntryReader( entryReader ).build();
         LogTailScanner tailScanner = new LogTailScanner( logFiles, entryReader, new Monitors() );
         return new UpgradableDatabase( new StoreVersionCheck( pageCache ), getRecordFormats(), tailScanner );
@@ -357,7 +369,7 @@ public class StoreUpgraderTest
         return new AbstractStoreMigrationParticipant( "Failing" )
         {
             @Override
-            public void moveMigratedFiles( File migrationDir, File storeDir, String versionToUpgradeFrom,
+            public void moveMigratedFiles( DatabaseLayout migrationLayout, DatabaseLayout directoryLayout, String versionToUpgradeFrom,
                     String versionToMigrateTo ) throws IOException
             {
                 throw new IOException( failureMessage );
@@ -386,7 +398,7 @@ public class StoreUpgraderTest
             MigrationProgressMonitor progressMonitor )
     {
         NullLogService instance = NullLogService.getInstance();
-        StoreMigrator defaultMigrator = new StoreMigrator( fileSystem, pageCache, getTuningConfig(), instance );
+        StoreMigrator defaultMigrator = new StoreMigrator( fileSystem, pageCache, getTuningConfig(), instance, jobScheduler );
         CountsMigrator countsMigrator = new CountsMigrator( fileSystem, pageCache, getTuningConfig() );
         SchemaIndexMigrator indexMigrator = new SchemaIndexMigrator( fileSystem, IndexProvider.EMPTY );
 
@@ -404,7 +416,7 @@ public class StoreUpgraderTest
 
     private List<File> migrationHelperDirs()
     {
-        File[] tmpDirs = dbDirectory.listFiles( ( file, name ) -> file.isDirectory() &&
+        File[] tmpDirs = databaseLayout.listDatabaseFiles( ( file, name ) -> file.isDirectory() &&
                                                           (name.equals( StoreUpgrader.MIGRATION_DIRECTORY ) ||
                 name.startsWith( StoreUpgrader.MIGRATION_LEFT_OVERS_DIRECTORY )) );
         assertNotNull( "Some IO errors occurred", tmpDirs );

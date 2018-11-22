@@ -73,7 +73,8 @@ public interface IndexProviderMap
      */
     default CapableIndexDescriptor withCapabilities( StoreIndexDescriptor descriptor )
     {
-        IndexCapability capability = lookup( descriptor.providerDescriptor() ).getCapability();
+        IndexProviderDescriptor providerDescriptor = descriptor.providerDescriptor();
+        IndexCapability capability = lookup( providerDescriptor ).getCapability( descriptor );
         return new CapableIndexDescriptor( descriptor, capability );
     }
 

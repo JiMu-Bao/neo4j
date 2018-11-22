@@ -58,7 +58,7 @@ public class LuceneIndexProvider extends IndexProvider
                                 IndexDirectoryStructure.Factory directoryStructureFactory, Monitor monitor, Config config,
                                 OperationalMode operationalMode )
     {
-        super( LuceneIndexProviderFactory.PROVIDER_DESCRIPTOR, 0, directoryStructureFactory );
+        super( LuceneIndexProviderFactory.PROVIDER_DESCRIPTOR, directoryStructureFactory );
         this.monitor = monitor;
         this.indexStorageFactory = buildIndexStorageFactory( fileSystem, directoryFactory );
         this.fileSystem = fileSystem;
@@ -136,7 +136,7 @@ public class LuceneIndexProvider extends IndexProvider
     }
 
     @Override
-    public IndexCapability getCapability()
+    public IndexCapability getCapability( StoreIndexDescriptor descriptor )
     {
         return IndexCapability.NO_CAPABILITY;
     }

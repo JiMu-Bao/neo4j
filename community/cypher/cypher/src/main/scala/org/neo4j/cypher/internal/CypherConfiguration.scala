@@ -19,16 +19,20 @@
  */
 package org.neo4j.cypher.internal
 
-import org.neo4j.cypher.internal.compiler.v3_5.StatsDivergenceCalculator
-import org.neo4j.cypher.{CypherPlannerOption, CypherRuntimeOption, CypherVersion}
+import java.util.concurrent.TimeUnit
+
+import org.neo4j.cypher.internal.compatibility.CypherRuntimeConfiguration
+import org.neo4j.cypher.internal.compiler.v3_5.{CypherPlannerConfiguration, StatsDivergenceCalculator}
+import org.neo4j.cypher.{CypherExpressionEngineOption, CypherPlannerOption, CypherRuntimeOption, CypherVersion}
 import org.neo4j.graphdb.factory.GraphDatabaseSettings
 import org.neo4j.kernel.configuration.Config
+
+import scala.concurrent.duration.Duration
 
 /**
   * Holds all configuration options for the Neo4j Cypher execution engine, compilers and runtimes.
   */
 object CypherConfiguration {
-
   def fromConfig(config: Config): CypherConfiguration = {
     CypherConfiguration(
       CypherVersion(config.get(GraphDatabaseSettings.cypher_parser_version)),
@@ -44,15 +48,21 @@ object CypherConfiguration {
       config.get(GraphDatabaseSettings.csv_legacy_quote_escaping),
       config.get(GraphDatabaseSettings.csv_buffer_size),
       config.get(GraphDatabaseSettings.cypher_plan_with_minimum_cardinality_estimates),
-      config.get(GraphDatabaseSettings.cypher_disable_compiled_expressions)
+      CypherExpressionEngineOption(config.get(GraphDatabaseSettings.cypher_expression_engine)),
+      config.get(GraphDatabaseSettings.cypher_lenient_create_relationship),
+      config.get(GraphDatabaseSettings.cypher_worker_count),
+      config.get(GraphDatabaseSettings.cypher_morsel_size),
+      config.get(GraphDatabaseSettings.enable_morsel_runtime_trace),
+      config.get(GraphDatabaseSettings.cypher_task_wait),
+      config.get(GraphDatabaseSettings.cypher_expression_recompilation_limit)
     )
   }
 
   def statsDivergenceFromConfig(config: Config): StatsDivergenceCalculator = {
     val divergenceThreshold = config.get(GraphDatabaseSettings.query_statistics_divergence_threshold).doubleValue()
     val targetThreshold = config.get(GraphDatabaseSettings.query_statistics_divergence_target).doubleValue()
-    val minReplanTime = config.get(GraphDatabaseSettings.cypher_min_replan_interval).toMillis().longValue()
-    val targetReplanTime = config.get(GraphDatabaseSettings.cypher_replan_interval_target).toMillis().longValue()
+    val minReplanTime = config.get(GraphDatabaseSettings.cypher_min_replan_interval).toMillis.longValue()
+    val targetReplanTime = config.get(GraphDatabaseSettings.cypher_replan_interval_target).toMillis.longValue()
     val divergenceAlgorithm = config.get(GraphDatabaseSettings.cypher_replan_algorithm)
     StatsDivergenceCalculator.divergenceCalculatorFor(divergenceAlgorithm,
                                                       divergenceThreshold,
@@ -60,8 +70,6 @@ object CypherConfiguration {
                                                       minReplanTime,
                                                       targetReplanTime)
   }
-
-
 }
 
 case class CypherConfiguration(version: CypherVersion,
@@ -77,4 +85,35 @@ case class CypherConfiguration(version: CypherVersion,
                                legacyCsvQuoteEscaping: Boolean,
                                csvBufferSize: Int,
                                planWithMinimumCardinalityEstimates: Boolean,
-                               disableCompiledExpressions: Boolean)
+                               expressionEngineOption: CypherExpressionEngineOption,
+                               lenientCreateRelationship: Boolean,
+                               workers: Int,
+                               morselSize: Int,
+                               doSchedulerTracing: Boolean,
+                               waitTimeout: Int,
+                               recompilationLimit: Int) {
+
+  def toCypherRuntimeConfiguration: CypherRuntimeConfiguration =
+    CypherRuntimeConfiguration(
+      workers = workers,
+      morselSize = morselSize,
+      doSchedulerTracing = doSchedulerTracing,
+      waitTimeout = Duration(waitTimeout, TimeUnit.MILLISECONDS)
+    )
+
+  def toCypherPlannerConfiguration(config: Config): CypherPlannerConfiguration =
+    CypherPlannerConfiguration(
+      queryCacheSize = queryCacheSize,
+      statsDivergenceCalculator = CypherConfiguration.statsDivergenceFromConfig(config),
+      useErrorsOverWarnings = useErrorsOverWarnings,
+      idpMaxTableSize = idpMaxTableSize,
+      idpIterationDuration = idpIterationDuration,
+      errorIfShortestPathFallbackUsedAtRuntime = errorIfShortestPathFallbackUsedAtRuntime,
+      errorIfShortestPathHasCommonNodesAtRuntime = errorIfShortestPathHasCommonNodesAtRuntime,
+      legacyCsvQuoteEscaping = legacyCsvQuoteEscaping,
+      csvBufferSize = csvBufferSize,
+      nonIndexedLabelWarningThreshold = config.get(GraphDatabaseSettings.query_non_indexed_label_warning_threshold).longValue(),
+      planWithMinimumCardinalityEstimates = planWithMinimumCardinalityEstimates,
+      lenientCreateRelationship = lenientCreateRelationship
+    )
+}

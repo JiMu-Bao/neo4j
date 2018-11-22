@@ -56,11 +56,11 @@ class SpatialIndexReader extends SpatialIndexCache<SpatialIndexPartReader<Native
     }
 
     @Override
-    public long countIndexedNodes( long nodeId, Value... propertyValues )
+    public long countIndexedNodes( long nodeId, int[] propertyKeyIds, Value... propertyValues )
     {
         NativeIndexReader<SpatialIndexKey,NativeIndexValue> partReader =
                 uncheckedSelect( ((PointValue) propertyValues[0]).getCoordinateReferenceSystem() );
-        return partReader == null ? 0L : partReader.countIndexedNodes( nodeId, propertyValues );
+        return partReader == null ? 0L : partReader.countIndexedNodes( nodeId, propertyKeyIds, propertyValues );
     }
 
     @Override
@@ -78,13 +78,19 @@ class SpatialIndexReader extends SpatialIndexCache<SpatialIndexPartReader<Native
     public PrimitiveLongResourceIterator query( IndexQuery... predicates )
     {
         NodeValueIterator nodeValueIterator = new NodeValueIterator();
-        query( nodeValueIterator, IndexOrder.NONE, predicates );
+        query( nodeValueIterator, IndexOrder.NONE, nodeValueIterator.needsValues(), predicates );
         return nodeValueIterator;
     }
 
     @Override
-    public void query( IndexProgressor.NodeValueClient cursor, IndexOrder indexOrder, IndexQuery... predicates )
+    public void query( IndexProgressor.NodeValueClient cursor, IndexOrder indexOrder, boolean needsValues, IndexQuery... predicates )
     {
+        // Spatial does not support providing values
+        if ( needsValues )
+        {
+            throw new IllegalStateException( "Spatial index does not support providing values" );
+        }
+
         if ( predicates.length != 1 )
         {
             throw new IllegalArgumentException( "Only single property spatial indexes are supported." );
@@ -94,10 +100,10 @@ class SpatialIndexReader extends SpatialIndexCache<SpatialIndexPartReader<Native
         {
             loadAll();
             BridgingIndexProgressor multiProgressor = new BridgingIndexProgressor( cursor, descriptor.schema().getPropertyIds() );
-            cursor.initialize( descriptor, multiProgressor, predicates );
+            cursor.initialize( descriptor, multiProgressor, predicates, indexOrder, false );
             for ( NativeIndexReader<SpatialIndexKey,NativeIndexValue> reader : this )
             {
-                reader.query( multiProgressor, indexOrder, predicates );
+                reader.query( multiProgressor, indexOrder, false, predicates );
             }
         }
         else
@@ -120,16 +126,16 @@ class SpatialIndexReader extends SpatialIndexCache<SpatialIndexPartReader<Native
                 SpatialIndexPartReader<NativeIndexValue> part = uncheckedSelect( crs );
                 if ( part != null )
                 {
-                    part.query( cursor, indexOrder, predicates );
+                    part.query( cursor, indexOrder, false, predicates );
                 }
                 else
                 {
-                    cursor.initialize( descriptor, IndexProgressor.EMPTY, predicates );
+                    cursor.initialize( descriptor, IndexProgressor.EMPTY, predicates, indexOrder, false );
                 }
             }
             else
             {
-                cursor.initialize( descriptor, IndexProgressor.EMPTY, predicates );
+                cursor.initialize( descriptor, IndexProgressor.EMPTY, predicates, indexOrder, false );
             }
         }
     }

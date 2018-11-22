@@ -30,11 +30,14 @@ import java.lang.annotation.Target;
 import java.util.List;
 import java.util.Random;
 import java.util.function.Consumer;
+import java.util.stream.DoubleStream;
+import java.util.stream.IntStream;
 
 import org.neo4j.helpers.Exceptions;
 import org.neo4j.values.storable.RandomValues;
 import org.neo4j.values.storable.TextValue;
 import org.neo4j.values.storable.Value;
+import org.neo4j.values.storable.ValueType;
 
 import static java.lang.System.currentTimeMillis;
 
@@ -46,6 +49,7 @@ import static java.lang.System.currentTimeMillis;
  */
 public class RandomRule implements TestRule
 {
+    private long globalSeed;
     private long seed;
     private boolean hasGlobalSeed;
     private Random random;
@@ -62,7 +66,7 @@ public class RandomRule implements TestRule
     public RandomRule withSeedForAllTests( long seed )
     {
         hasGlobalSeed = true;
-        this.seed = seed;
+        this.globalSeed = seed;
         return this;
     }
 
@@ -85,6 +89,10 @@ public class RandomRule implements TestRule
                     {
                         setSeed( currentTimeMillis() );
                     }
+                }
+                else
+                {
+                    setSeed( globalSeed );
                 }
                 reset();
                 try
@@ -135,6 +143,11 @@ public class RandomRule implements TestRule
         return random.nextDouble();
     }
 
+    public DoubleStream doubles( int dimension, double minValue, double maxValue )
+    {
+        return random.doubles( dimension, minValue, maxValue );
+    }
+
     public float nextFloat()
     {
         return random.nextFloat();
@@ -153,6 +166,11 @@ public class RandomRule implements TestRule
     public int nextInt( int origin, int bound )
     {
         return random.nextInt( (bound - origin) + 1 ) + origin;
+    }
+
+    public IntStream ints( long streamSize, int randomNumberOrigin, int randomNumberBound )
+    {
+        return random.ints( streamSize, randomNumberOrigin, randomNumberBound );
     }
 
     public double nextGaussian()
@@ -199,6 +217,16 @@ public class RandomRule implements TestRule
         return nextAlphaNumericTextValue().stringValue();
     }
 
+    public String nextAsciiString()
+    {
+        return nextAsciiTextValue().stringValue();
+    }
+
+    private TextValue nextAsciiTextValue()
+    {
+        return randoms.nextAsciiTextValue();
+    }
+
     public TextValue nextAlphaNumericTextValue( )
     {
         return randoms.nextAlphaNumericTextValue();
@@ -212,6 +240,16 @@ public class RandomRule implements TestRule
     public TextValue nextAlphaNumericTextValue( int minLength, int maxLength )
     {
         return randoms.nextAlphaNumericTextValue( minLength, maxLength );
+    }
+
+    public TextValue nextBasicMultilingualPlaneTextValue()
+    {
+        return randoms.nextBasicMultilingualPlaneTextValue();
+    }
+
+    public String nextBasicMultilingualPlaneString()
+    {
+        return nextBasicMultilingualPlaneTextValue().stringValue();
     }
 
     public <T> T[] selection( T[] among, int min, int max, boolean allowDuplicates )
@@ -242,6 +280,11 @@ public class RandomRule implements TestRule
     public Value nextValue()
     {
         return randoms.nextValue();
+    }
+
+    public Value nextValue( ValueType type )
+    {
+        return randoms.nextValueOfType( type );
     }
 
     // ============================

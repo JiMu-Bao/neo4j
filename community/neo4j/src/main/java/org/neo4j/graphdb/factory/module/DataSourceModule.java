@@ -19,13 +19,14 @@
  */
 package org.neo4j.graphdb.factory.module;
 
-import java.io.File;
 import java.util.function.Supplier;
 
 import org.neo4j.graphdb.GraphDatabaseService;
+import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule;
+import org.neo4j.graphdb.factory.module.edition.context.DatabaseEditionContext;
 import org.neo4j.kernel.NeoStoreDataSource;
 import org.neo4j.kernel.api.InwardKernel;
-import org.neo4j.kernel.impl.core.TokenHolders;
+import org.neo4j.kernel.impl.coreapi.CoreAPIAvailabilityGuard;
 import org.neo4j.kernel.impl.factory.GraphDatabaseFacade;
 import org.neo4j.kernel.impl.proc.Procedures;
 import org.neo4j.storageengine.api.StoreId;
@@ -38,24 +39,29 @@ public class DataSourceModule
 
     public final Supplier<StoreId> storeId;
 
-    public final TokenHolders tokenHolders;
+    public final CoreAPIAvailabilityGuard coreAPIAvailabilityGuard;
 
-    public DataSourceModule( String databaseName, final PlatformModule platformModule, EditionModule editionModule, Procedures procedures,
+    public DataSourceModule( String databaseName, PlatformModule platformModule, AbstractEditionModule editionModule, Procedures procedures,
             GraphDatabaseFacade graphDatabaseFacade )
     {
-
-        tokenHolders = editionModule.tokenHoldersSupplier.get();
-        File databaseDirectory = new File( platformModule.storeDir, databaseName );
-
         platformModule.diagnosticsManager.prependProvider( platformModule.config );
+        DatabaseEditionContext editionContext = editionModule.createDatabaseContext( databaseName );
+        ModularDatabaseCreationContext context =
+                new ModularDatabaseCreationContext( databaseName, platformModule, editionContext, procedures, graphDatabaseFacade );
+        neoStoreDataSource = new NeoStoreDataSource( context );
 
-        neoStoreDataSource = new NeoStoreDataSource( new ModularDatabaseCreationContext( databaseName, databaseDirectory, platformModule, editionModule,
-                procedures, graphDatabaseFacade, tokenHolders ) );
-
+        this.coreAPIAvailabilityGuard = context.getCoreAPIAvailabilityGuard();
         this.storeId = neoStoreDataSource::getStoreId;
         this.kernelAPI = neoStoreDataSource::getKernel;
 
-        ProcedureGDSFactory gdsFactory = new ProcedureGDSFactory( platformModule, this, editionModule.coreAPIAvailabilityGuard, tokenHolders );
+        ProcedureGDSFactory gdsFactory =
+                new ProcedureGDSFactory( platformModule, this, coreAPIAvailabilityGuard, context.getTokenHolders(),
+                        editionModule.getThreadToTransactionBridge() );
         procedures.registerComponent( GraphDatabaseService.class, gdsFactory::apply, true );
+    }
+
+    public CoreAPIAvailabilityGuard getCoreAPIAvailabilityGuard()
+    {
+        return coreAPIAvailabilityGuard;
     }
 }

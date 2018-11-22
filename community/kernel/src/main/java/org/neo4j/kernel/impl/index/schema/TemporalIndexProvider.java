@@ -55,7 +55,7 @@ public class TemporalIndexProvider extends IndexProvider
                                   IndexDirectoryStructure.Factory directoryStructure, Monitor monitor,
                                   RecoveryCleanupWorkCollector recoveryCleanupWorkCollector, boolean readOnly )
     {
-        super( TEMPORAL_PROVIDER_DESCRIPTOR, 0, directoryStructure );
+        super( TEMPORAL_PROVIDER_DESCRIPTOR, directoryStructure );
         this.pageCache = pageCache;
         this.fs = fs;
         this.monitor = monitor;
@@ -134,7 +134,7 @@ public class TemporalIndexProvider extends IndexProvider
     }
 
     @Override
-    public IndexCapability getCapability()
+    public IndexCapability getCapability( StoreIndexDescriptor descriptor )
     {
         return CAPABILITY;
     }
@@ -161,7 +161,7 @@ public class TemporalIndexProvider extends IndexProvider
         {
             if ( support( valueCategories ) )
             {
-                return ORDER_ASC;
+                return ORDER_BOTH;
             }
             return ORDER_NONE;
         }
@@ -178,6 +178,18 @@ public class TemporalIndexProvider extends IndexProvider
                 return IndexValueCapability.PARTIAL;
             }
             return IndexValueCapability.NO;
+        }
+
+        @Override
+        public boolean isFulltextIndex()
+        {
+            return false;
+        }
+
+        @Override
+        public boolean isEventuallyConsistent()
+        {
+            return false;
         }
 
         private boolean support( ValueCategory[] valueCategories )

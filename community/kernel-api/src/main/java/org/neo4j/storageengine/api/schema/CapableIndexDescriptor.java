@@ -55,4 +55,16 @@ public class CapableIndexDescriptor extends StoreIndexDescriptor
     {
         return indexCapability.limitations();
     }
+
+    @Override
+    public boolean isFulltextIndex()
+    {
+        return indexCapability.isFulltextIndex();
+    }
+
+    @Override
+    public boolean isEventuallyConsistent()
+    {
+        return indexCapability.isEventuallyConsistent();
+    }
 }

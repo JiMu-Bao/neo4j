@@ -52,6 +52,7 @@ public abstract class TokenStore<RECORD extends TokenRecord>
 
     public TokenStore(
             File file,
+            File idFile,
             Config configuration,
             IdType idType,
             IdGeneratorFactory idGeneratorFactory,
@@ -63,7 +64,7 @@ public abstract class TokenStore<RECORD extends TokenRecord>
             String storeVersion,
             OpenOption... openOptions )
     {
-        super( file, configuration, idType, idGeneratorFactory, pageCache, logProvider, typeDescriptor,
+        super( file, idFile, configuration, idType, idGeneratorFactory, pageCache, logProvider, typeDescriptor,
                 recordFormat, NO_STORE_HEADER_FORMAT, storeVersion, openOptions );
         this.nameStore = nameStore;
     }

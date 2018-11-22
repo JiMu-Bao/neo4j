@@ -21,7 +21,6 @@ package org.neo4j.index.internal.gbptree;
 
 import org.neo4j.io.pagecache.PageCursor;
 
-import static org.neo4j.index.internal.gbptree.GenerationSafePointerPair.read;
 import static org.neo4j.index.internal.gbptree.Layout.FIXED_SIZE_KEY;
 import static org.neo4j.index.internal.gbptree.Layout.FIXED_SIZE_VALUE;
 import static org.neo4j.index.internal.gbptree.TreeNode.Type.INTERNAL;
@@ -180,17 +179,21 @@ class TreeNodeFixedSize<KEY,VALUE> extends TreeNode<KEY,VALUE>
     }
 
     @Override
-    long childAt( PageCursor cursor, int pos, long stableGeneration, long unstableGeneration )
-    {
-        cursor.setOffset( childOffset( pos ) );
-        return read( cursor, stableGeneration, unstableGeneration, pos );
-    }
-
-    @Override
     void setChildAt( PageCursor cursor, long child, int pos, long stableGeneration, long unstableGeneration )
     {
         cursor.setOffset( childOffset( pos ) );
         writeChild( cursor, child, stableGeneration, unstableGeneration );
+    }
+
+    @Override
+    int keyValueSizeCap()
+    {
+        return NO_KEY_VALUE_SIZE_CAP;
+    }
+
+    @Override
+    void validateKeyValueSize( KEY key, VALUE value )
+    {   // no-op for fixed size
     }
 
     @Override

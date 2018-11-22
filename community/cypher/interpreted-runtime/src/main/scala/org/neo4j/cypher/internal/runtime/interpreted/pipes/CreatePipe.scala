@@ -19,12 +19,12 @@
  */
 package org.neo4j.cypher.internal.runtime.interpreted.pipes
 
-import org.neo4j.cypher.internal.runtime.{Operations, QueryContext}
 import org.neo4j.cypher.internal.runtime.interpreted._
 import org.neo4j.cypher.internal.runtime.interpreted.commands.expressions.Expression
+import org.neo4j.cypher.internal.runtime.{LenientCreateRelationship, Operations, QueryContext}
 import org.neo4j.function.ThrowingBiConsumer
 import org.neo4j.values.AnyValue
-import org.neo4j.values.storable.Values
+import org.neo4j.values.storable.{Value, Values}
 import org.neo4j.values.virtual.{NodeValue, RelationshipValue}
 import org.opencypher.v9_0.util.attribution.Id
 import org.opencypher.v9_0.util.{CypherTypeException, InternalException, InvalidSemanticsException}
@@ -77,17 +77,6 @@ abstract class BaseCreatePipe(src: Pipe) extends PipeWithSource(src) {
     * @param key the property key associated with the NO_VALUE
     */
   protected def handleNoValue(key: String): Unit
-
-  /**
-    * Set labels on node.
-    */
-  protected def setLabels(context: ExecutionContext,
-                          state: QueryState,
-                          nodeId: Long,
-                          labels: Seq[LazyLabel]): Unit = {
-    val labelIds = labels.map(_.getOrCreateId(state.query).id)
-    state.query.setLabelsOnNode(nodeId, labelIds.iterator)
-  }
 }
 
 /**
@@ -101,9 +90,9 @@ abstract class EntityCreatePipe(src: Pipe) extends BaseCreatePipe(src) {
   protected def createNode(context: ExecutionContext,
                            state: QueryState,
                            data: CreateNodeCommand): (String, NodeValue) = {
-    val node = state.query.createNode()
+    val labelIds = data.labels.map(_.getOrCreateId(state.query).id).toArray
+    val node = state.query.createNode(labelIds)
     data.properties.foreach(setProperties(context, state, node.id(), _, state.query.nodeOps))
-    setLabels(context, state, node.id(), data.labels)
     data.idName -> node
   }
 
@@ -112,19 +101,28 @@ abstract class EntityCreatePipe(src: Pipe) extends BaseCreatePipe(src) {
     */
   protected def createRelationship(context: ExecutionContext,
                                    state: QueryState,
-                                   data: CreateRelationshipCommand): (String, RelationshipValue) = {
-    val start = getNode(context, data.startNode)
-    val end = getNode(context, data.endNode)
-    val typeId = data.relType.typ(state.query)
-    val relationship = state.query.createRelationship(start.id(), end.id(), typeId)
-    data.properties.foreach(setProperties(context, state, relationship.id(), _, state.query.relationshipOps))
+                                   data: CreateRelationshipCommand): (String, AnyValue) = {
+    val start = getNode(context, data.idName, data.startNode, state.lenientCreateRelationship)
+    val end = getNode(context, data.idName, data.endNode, state.lenientCreateRelationship)
+
+    val relationship =
+      if (start == null || end == null)
+        Values.NO_VALUE // lenient create relationship NOOPs on missing node
+      else {
+        val typeId = data.relType.typ(state.query)
+        val relationship = state.query.createRelationship(start.id(), end.id(), typeId)
+        data.properties.foreach(setProperties(context, state, relationship.id(), _, state.query.relationshipOps))
+        relationship
+      }
     data.idName -> relationship
   }
 
-  private def getNode(row: ExecutionContext, name: String): NodeValue =
+  private def getNode(row: ExecutionContext, relName: String, name: String, lenient: Boolean): NodeValue =
     row.get(name) match {
       case Some(n: NodeValue) => n
-      case Some(Values.NO_VALUE) => throw new InternalException(s"Expected to find a node at '$name' but found instead: null")
+      case Some(Values.NO_VALUE) =>
+        if (lenient) null
+        else throw new InternalException(LenientCreateRelationship.errorMsg(relName, name))
       case Some(x) => throw new InternalException(s"Expected to find a node at '$name' but found instead: $x")
       case None => throw new InternalException(s"Expected to find a node at '$name' but found instead: null")
     }
@@ -137,12 +135,18 @@ case class CreatePipe(src: Pipe, nodes: Array[CreateNodeCommand], relationships:
                      (val id: Id = Id.INVALID_ID) extends EntityCreatePipe(src) {
 
   override def internalCreateResults(input: Iterator[ExecutionContext], state: QueryState): Iterator[ExecutionContext] =
-    input.map(inRow => {
-      val createdNodes = nodes.map(node => createNode(inRow, state, node))
-      val rowWithNodes = inRow.copyWith(createdNodes)
+    input.map(row => {
+      nodes.foreach { nodeCommand =>
+        val (key, node) = createNode(row, state, nodeCommand)
+        row.set(key, node)
+      }
 
-      val createdRelationships = relationships.map(r => createRelationship(rowWithNodes, state, r))
-      rowWithNodes.copyWith(createdRelationships)
+      relationships.foreach{ relCommand =>
+        val (key, node) = createRelationship(row, state, relCommand)
+        row.set(key, node)
+      }
+
+      row
     })
 
   override protected def handleNoValue(key: String) {

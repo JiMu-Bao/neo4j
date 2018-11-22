@@ -24,7 +24,6 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,6 +48,7 @@ import org.neo4j.kernel.api.index.NodePropertyAccessor;
 import org.neo4j.kernel.api.schema.MultiTokenSchemaDescriptor;
 import org.neo4j.kernel.api.schema.SchemaDescriptorFactory;
 import org.neo4j.kernel.api.schema.constraints.IndexBackedConstraintDescriptor;
+import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.api.integrationtest.KernelIntegrationTest;
 import org.neo4j.kernel.impl.api.state.ConstraintIndexCreator;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
@@ -67,6 +67,8 @@ import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.neo4j.graphdb.Label.label;
 import static org.neo4j.graphdb.RelationshipType.withName;
+import static org.neo4j.graphdb.factory.GraphDatabaseSettings.default_schema_provider;
+import static org.neo4j.helpers.collection.Iterables.single;
 import static org.neo4j.helpers.collection.Iterators.asSet;
 import static org.neo4j.internal.kernel.api.security.LoginContext.AUTH_DISABLED;
 
@@ -200,7 +202,8 @@ public class IndexIT extends KernelIntegrationTest
         AssertableLogProvider logProvider = new AssertableLogProvider();
         ConstraintIndexCreator creator = new ConstraintIndexCreator( () -> kernel, indexingService, propertyAccessor, logProvider );
 
-        IndexDescriptor constraintIndex = creator.createConstraintIndex( descriptor, Optional.empty() );
+        String defaultProvider = Config.defaults().get( default_schema_provider );
+        IndexDescriptor constraintIndex = creator.createConstraintIndex( descriptor, defaultProvider );
         // then
         Transaction transaction = newTransaction();
         assertEquals( emptySet(), asSet( transaction.schemaRead().constraintsGetForLabel( labelId ) ) );
@@ -297,7 +300,7 @@ public class IndexIT extends KernelIntegrationTest
             // then
             assertEquals( 1, indexes.size() );
             IndexDefinition index = indexes.iterator().next();
-            assertEquals( "Label1", index.getLabel().name() );
+            assertEquals( "Label1", single( index.getLabels() ).name() );
             assertEquals( asSet( "property1" ), Iterables.asSet( index.getPropertyKeys() ) );
             assertTrue( "index should be a constraint index", index.isConstraintIndex() );
 
@@ -326,7 +329,7 @@ public class IndexIT extends KernelIntegrationTest
         transaction.schemaWrite().indexCreate( descriptor );
         commit();
 
-        try ( org.neo4j.graphdb.Transaction tx = db.beginTx() )
+        try ( @SuppressWarnings( "unused" ) org.neo4j.graphdb.Transaction tx = db.beginTx() )
         {
             Set<IndexDefinition> indexes = Iterables.asSet( db.schema().getIndexes() );
 
@@ -375,14 +378,14 @@ public class IndexIT extends KernelIntegrationTest
         transaction.schemaWrite().indexCreate( descriptor );
         commit();
 
-        try ( org.neo4j.graphdb.Transaction tx = db.beginTx() )
+        try ( @SuppressWarnings( "unused" ) org.neo4j.graphdb.Transaction tx = db.beginTx() )
         {
             Set<IndexDefinition> indexes = Iterables.asSet( db.schema().getIndexes() );
 
             // then
             assertEquals( 1, indexes.size() );
             IndexDefinition index = indexes.iterator().next();
-            assertEquals( LABEL, index.getLabel().name() );
+            assertEquals( LABEL, single( index.getLabels() ).name() );
             assertThat( index.getLabels(), containsInAnyOrder( label( LABEL ) ) );
             try
             {

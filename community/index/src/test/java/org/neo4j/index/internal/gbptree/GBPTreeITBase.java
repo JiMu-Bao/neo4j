@@ -40,6 +40,7 @@ import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.test.rule.fs.DefaultFileSystemRule;
 
 import static java.lang.Integer.max;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -204,6 +205,34 @@ public abstract class GBPTreeITBase<KEY,VALUE>
         }
     }
 
+    // Timeout because test verify no infinite loop
+    @Test( timeout = 10_000L )
+    public void shouldHandleDescendingWithEmptyRange() throws IOException
+    {
+        long[] seeds = new long[]{0, 1, 4};
+        try ( GBPTree<KEY,VALUE> index = createIndex() )
+        {
+            // Write
+            try ( Writer<KEY, VALUE> writer = index.writer() )
+            {
+                for ( long seed : seeds )
+                {
+                    KEY key = layout.key( seed );
+                    VALUE value = layout.value( 0 );
+                    writer.put( key, value );
+                }
+            }
+
+            KEY from = layout.key( 3 );
+            KEY to = layout.key( 1 );
+            try ( RawCursor<Hit<KEY,VALUE>, IOException> seek = index.seek( from, to ) )
+            {
+                assertFalse( seek.next() );
+            }
+            index.checkpoint( IOLimiter.UNLIMITED );
+        }
+    }
+
     private void randomlyModifyIndex( GBPTree<KEY,VALUE> index, Map<KEY,VALUE> data, Random random, double removeProbability )
             throws IOException
     {
@@ -277,8 +306,8 @@ public abstract class GBPTreeITBase<KEY,VALUE>
 
     private void assertEqualsValue( VALUE expected, VALUE actual )
     {
-        assertTrue( String.format( "expected equal, expected=%s, actual=%s", expected.toString(), actual.toString() ),
-                layout.compareValue( expected, actual ) == 0 );
+        assertEquals( String.format( "expected equal, expected=%s, actual=%s", expected.toString(), actual.toString() ), 0,
+                layout.compareValue( expected, actual ) );
     }
 
     // KEEP even if unused

@@ -19,13 +19,16 @@
  */
 package org.neo4j.cypher.internal.compiler.v3_5.planner.logical.steps
 
-import org.opencypher.v9_0.util.test_helpers.CypherFunSuite
 import org.neo4j.cypher.internal.compiler.v3_5.planner._
+import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.PlanMatchHelp
+import org.neo4j.cypher.internal.ir.v3_5.{AggregatingQueryProjection, InterestingOrder}
 import org.neo4j.cypher.internal.v3_5.logical.plans.{Aggregation, LogicalPlan, Projection}
-import org.neo4j.cypher.internal.ir.v3_5.AggregatingQueryProjection
+import org.opencypher.v9_0.ast.ASTAnnotationMap
+import org.opencypher.v9_0.ast.semantics.{ExpressionTypeInfo, SemanticTable}
 import org.opencypher.v9_0.expressions._
+import org.opencypher.v9_0.util.test_helpers.CypherFunSuite
 
-class AggregationTest extends CypherFunSuite with LogicalPlanningTestSupport {
+class AggregationTest extends CypherFunSuite with LogicalPlanningTestSupport with PlanMatchHelp {
   val aggregatingMap: Map[String, Expression] = Map("count(*)" -> CountStar()(pos))
 
   val propExp: Expression = Property(varFor("n"), PropertyKeyName("prop")(pos))(pos)
@@ -46,7 +49,8 @@ class AggregationTest extends CypherFunSuite with LogicalPlanningTestSupport {
     )
     val startPlan = newMockedLogicalPlan()
 
-    aggregation(startPlan, projection, context, new StubSolveds, new StubCardinalities) should equal(
+    val result = aggregation(startPlan, projection, InterestingOrder.empty, context)
+    result should equal(
       Aggregation(startPlan, Map(), aggregatingMap)
     )
   }
@@ -64,7 +68,8 @@ class AggregationTest extends CypherFunSuite with LogicalPlanningTestSupport {
 
     val startPlan = newMockedLogicalPlan()
 
-    aggregation(startPlan, projectionPlan, context, new StubSolveds, new StubCardinalities) should equal(
+    val result = aggregation(startPlan, projectionPlan, InterestingOrder.empty, context)
+    result should equal(
       Aggregation(
        startPlan, groupingMap, aggregatingMap2)
     )
@@ -88,7 +93,7 @@ class AggregationTest extends CypherFunSuite with LogicalPlanningTestSupport {
     val projectionPlan: LogicalPlan = Projection(startPlan, groupingMap)
 
     // When
-    val result = aggregation(projectionPlan, projection, context, new StubSolveds, new StubCardinalities)
+    val result = aggregation(projectionPlan, projection, InterestingOrder.empty, context)
     // Then
     result should equal(
       Aggregation(projectionPlan, groupingKeyMap, aggregatingMap)

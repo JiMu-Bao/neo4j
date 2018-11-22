@@ -66,6 +66,7 @@ import org.neo4j.values.storable.LocalTimeArray;
 import org.neo4j.values.storable.LocalTimeValue;
 import org.neo4j.values.storable.LongArray;
 import org.neo4j.values.storable.LongValue;
+import org.neo4j.values.storable.NoValue;
 import org.neo4j.values.storable.PointArray;
 import org.neo4j.values.storable.PointValue;
 import org.neo4j.values.storable.ShortArray;
@@ -117,7 +118,7 @@ public class AppendOnlyValuesContainer implements ValuesContainer
 {
     private static final int CHUNK_SIZE = (int) ByteUnit.kibiBytes( 512 );
     private static final int REMOVED = 0xFF;
-    private static final int ENCODED_ZONE_ID = 0x8000_0000;
+    private static final ValueType[] VALUE_TYPES = ValueType.values();
 
     private final int chunkSize;
     private final List<ByteBuffer> chunks = new ArrayList<>();
@@ -170,10 +171,10 @@ public class AppendOnlyValuesContainer implements ValuesContainer
         checkArgument( offset >= 0 && offset < chunk.position(), "invalid chunk offset (%d), ref: 0x%X", offset, ref );
         final int typeId = chunk.get( offset ) & 0xFF;
         checkArgument( typeId != REMOVED, "element is already removed, ref: 0x%X", ref );
-        checkArgument( typeId < ValueType.values().length, "invaling typeId (%d) for ref 0x%X", typeId, ref );
+        checkArgument( typeId < VALUE_TYPES.length, "invaling typeId (%d) for ref 0x%X", typeId, ref );
         offset++;
 
-        final ValueType type = ValueType.values()[typeId];
+        final ValueType type = VALUE_TYPES[typeId];
         return type.getReader().read( chunk, offset );
     }
 
@@ -188,16 +189,6 @@ public class AppendOnlyValuesContainer implements ValuesContainer
         final ByteBuffer chunk = chunks.get( chunkIdx );
         chunk.put( chunkOffset, (byte) REMOVED );
         return removed;
-    }
-
-    @Override
-    public void clear()
-    {
-        assertNotClosed();
-        allocated.forEach( Memory::free );
-        allocated.clear();
-        chunks.clear();
-        currentChunk = addNewChunk( chunkSize );
     }
 
     @Override
@@ -219,7 +210,7 @@ public class AppendOnlyValuesContainer implements ValuesContainer
 
     private ByteBuffer addNewChunk( int size )
     {
-        final Memory memory = allocator.allocate( size );
+        final Memory memory = allocator.allocate( size, false );
         final ByteBuffer chunk = memory.asByteBuffer();
         allocated.add( memory );
         chunks.add( chunk );
@@ -559,12 +550,15 @@ public class AppendOnlyValuesContainer implements ValuesContainer
 
     private static ZoneId toZoneId( int z )
     {
-        if ( (ENCODED_ZONE_ID & z) != 0 )
+        // if lowest bit is set to 1 then it's a shifted zone id
+        if ( (z & 1) != 0 )
         {
-            final String zoneId = TimeZones.map( (short) z );
+            final String zoneId = TimeZones.map( (short) (z >> 1) );
             return ZoneId.of( zoneId );
         }
-        return ZoneOffset.ofTotalSeconds( z );
+        // otherwise it's a shifted offset seconds value
+        // preserve sign bit for negative offsets
+        return ZoneOffset.ofTotalSeconds( z >> 1 );
     }
 
     private static ArrayValue readDateTimeArray( ByteBuffer bb, int offset )
@@ -587,6 +581,7 @@ public class AppendOnlyValuesContainer implements ValuesContainer
 
     private enum ValueType
     {
+        NO_VALUE( NoValue.class, ( unused, unused2 ) -> NoValue.NO_VALUE ),
         BOOLEAN( BooleanValue.class, AppendOnlyValuesContainer::readBoolean ),
         BOOLEAN_ARRAY( BooleanArray.class, AppendOnlyValuesContainer::readBooleanArray ),
         BYTE( ByteValue.class, AppendOnlyValuesContainer::readByte ),
@@ -695,14 +690,14 @@ public class AppendOnlyValuesContainer implements ValuesContainer
 
         private void allocateBuf( int size )
         {
-            this.bufMemory = allocator.allocate( size );
+            this.bufMemory = allocator.allocate( size, false );
             this.buf = bufMemory.asByteBuffer();
         }
 
         @Override
         public void writeNull()
         {
-            throw new UnsupportedOperationException();
+            // nop
         }
 
         @Override
@@ -787,6 +782,8 @@ public class AppendOnlyValuesContainer implements ValuesContainer
         @Override
         public void writePoint( CoordinateReferenceSystem crs, double[] coordinate )
         {
+            checkArgument( coordinate.length == crs.getDimension(),
+                    "Dimension for %s is %d, got %d", crs.getName(), crs.getDimension(), coordinate.length );
             buf.putInt( crs.getCode() );
             for ( int i = 0; i < crs.getDimension(); i++ )
             {
@@ -839,11 +836,13 @@ public class AppendOnlyValuesContainer implements ValuesContainer
             if ( zone instanceof ZoneOffset )
             {
                 final int offsetSeconds = ((ZoneOffset) zone).getTotalSeconds();
-                buf.putInt( offsetSeconds );
+                // lowest bit set to 0: it's a zone offset in seconds
+                buf.putInt( offsetSeconds << 1 );
             }
             else
             {
-                final int zoneId = ENCODED_ZONE_ID | TimeZones.map( zone.getId() );
+                // lowest bit set to 1: it's a zone id
+                final int zoneId = (TimeZones.map( zone.getId() ) << 1) | 1;
                 buf.putInt( zoneId );
             }
         }

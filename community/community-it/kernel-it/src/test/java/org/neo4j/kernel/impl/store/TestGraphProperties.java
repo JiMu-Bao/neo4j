@@ -49,6 +49,7 @@ import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
@@ -177,7 +178,7 @@ public class TestGraphProperties
     @Test
     public void firstRecordOtherThanZeroIfNotFirst()
     {
-        File storeDir = testDirectory.directory();
+        File storeDir = testDirectory.databaseDir();
         GraphDatabaseAPI db = (GraphDatabaseAPI) factory.newImpermanentDatabase( storeDir );
         Transaction tx = db.beginTx();
         Node node = db.createNode();
@@ -194,7 +195,7 @@ public class TestGraphProperties
         db.shutdown();
 
         Config config = Config.defaults();
-        StoreFactory storeFactory = new StoreFactory( testDirectory.databaseDir(), config, new DefaultIdGeneratorFactory( fs.get() ),
+        StoreFactory storeFactory = new StoreFactory( testDirectory.databaseLayout(), config, new DefaultIdGeneratorFactory( fs.get() ),
                 pageCacheRule.getPageCache( fs.get() ), fs.get(), NullLogProvider.getInstance(), EmptyVersionContextSupplier.EMPTY );
         NeoStores neoStores = storeFactory.openAllNeoStores();
         long prop = neoStores.getMetaDataStore().getGraphNextProp();
@@ -250,14 +251,14 @@ public class TestGraphProperties
     @Test
     public void twoUncleanInARow() throws Exception
     {
-        File storeDir = new File( "dir" );
-        try ( EphemeralFileSystemAbstraction snapshot = produceUncleanStore( fs.get(), storeDir ) )
+        File databaseDir = testDirectory.databaseDir();
+        try ( EphemeralFileSystemAbstraction snapshot = produceUncleanStore( fs.get(), databaseDir ) )
         {
-            try ( EphemeralFileSystemAbstraction snapshot2 = produceUncleanStore( snapshot, storeDir ) )
+            try ( EphemeralFileSystemAbstraction snapshot2 = produceUncleanStore( snapshot, databaseDir ) )
             {
                 GraphDatabaseAPI db = (GraphDatabaseAPI) new TestGraphDatabaseFactory()
-                        .setFileSystem( produceUncleanStore( snapshot2, storeDir ) )
-                        .newImpermanentDatabase( storeDir );
+                        .setFileSystem( produceUncleanStore( snapshot2, databaseDir ) )
+                        .newImpermanentDatabase( databaseDir );
                 assertThat( properties( db ), inTx( db, hasProperty( "prop" ).withValue( "Some value" ) ) );
                 db.shutdown();
             }
@@ -278,7 +279,7 @@ public class TestGraphProperties
         assertEquals( graphProperties, properties( db ) );
         db.shutdown();
         db = (GraphDatabaseAPI) factory.newImpermanentDatabase();
-        assertFalse( graphProperties.equals( properties( db ) ) );
+        assertNotEquals( graphProperties, properties( db ) );
         db.shutdown();
     }
 

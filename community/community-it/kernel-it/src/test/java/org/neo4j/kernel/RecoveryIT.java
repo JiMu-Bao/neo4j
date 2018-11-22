@@ -59,6 +59,7 @@ import org.neo4j.internal.kernel.api.IndexCapability;
 import org.neo4j.internal.kernel.api.InternalIndexState;
 import org.neo4j.io.ByteUnit;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.IOLimiter;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.tracing.PageCacheTracer;
@@ -102,6 +103,7 @@ import org.neo4j.kernel.recovery.RecoveryMonitor;
 import org.neo4j.logging.AssertableLogProvider;
 import org.neo4j.logging.NullLog;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.scheduler.ThreadPoolJobScheduler;
 import org.neo4j.storageengine.api.StorageEngine;
 import org.neo4j.storageengine.api.schema.IndexReader;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
@@ -125,6 +127,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.neo4j.graphdb.RelationshipType.withName;
 import static org.neo4j.graphdb.facade.GraphDatabaseDependencies.newDependencies;
+import static org.neo4j.graphdb.factory.GraphDatabaseSettings.default_schema_provider;
 import static org.neo4j.helpers.ArrayUtil.array;
 import static org.neo4j.helpers.collection.Iterables.asList;
 import static org.neo4j.helpers.collection.Iterables.count;
@@ -145,7 +148,7 @@ public class RecoveryIT
     @Test
     public void idGeneratorsRebuildAfterRecovery() throws IOException
     {
-        GraphDatabaseService database = startDatabase( directory.directory() );
+        GraphDatabaseService database = startDatabase( directory.databaseDir() );
         int numberOfNodes = 10;
         try ( Transaction transaction = database.beginTx() )
         {
@@ -175,7 +178,7 @@ public class RecoveryIT
     @Test
     public void reportProgressOnRecovery() throws IOException
     {
-        GraphDatabaseService database = startDatabase( directory.directory() );
+        GraphDatabaseService database = startDatabase( directory.databaseDir() );
         for ( int i = 0; i < 10; i++ )
         {
             try ( Transaction transaction = database.beginTx() )
@@ -201,7 +204,7 @@ public class RecoveryIT
     @Test
     public void shouldRecoverIdsCorrectlyWhenWeCreateAndDeleteANodeInTheSameRecoveryRun() throws IOException
     {
-        GraphDatabaseService database = startDatabase( directory.directory() );
+        GraphDatabaseService database = startDatabase( directory.databaseDir() );
         Label testLabel = Label.label( "testLabel" );
         final String propertyToDelete = "propertyToDelete";
         final String validPropertyName = "validProperty";
@@ -255,9 +258,9 @@ public class RecoveryIT
                 Command.RelationshipCommand.class );
         adversary.disable();
 
-        File storeDir = directory.databaseDir();
+        File databaseDir = directory.databaseDir();
         GraphDatabaseService db = AdversarialPageCacheGraphDatabaseFactory.create( fileSystemRule.get(), adversary )
-                .newEmbeddedDatabaseBuilder( storeDir )
+                .newEmbeddedDatabaseBuilder( databaseDir )
                 .newGraphDatabase();
         try
         {
@@ -298,8 +301,9 @@ public class RecoveryIT
             healthOf( db ).panic( txFailure.getCause() ); // panic the db again to force recovery on the next startup
 
             // restart the database, now with regular page cache
+            File databaseDirectory = ((GraphDatabaseAPI) db).databaseLayout().databaseDirectory();
             db.shutdown();
-            db = startDatabase( storeDir );
+            db = startDatabase( databaseDirectory );
 
             // now we observe correct state: node is in the index and relationship is removed
             try ( Transaction tx = db.beginTx() )
@@ -382,7 +386,7 @@ public class RecoveryIT
     {
         // given
         EphemeralFileSystemAbstraction fs = new EphemeralFileSystemAbstraction();
-        GraphDatabaseService db = new TestGraphDatabaseFactory().setFileSystem( fs ).newImpermanentDatabase( directory.storeDir() );
+        GraphDatabaseService db = new TestGraphDatabaseFactory().setFileSystem( fs ).newImpermanentDatabase( directory.databaseDir() );
         produceRandomGraphUpdates( db, 100 );
         checkPoint( db );
         EphemeralFileSystemAbstraction checkPointFs = fs.snapshot();
@@ -448,7 +452,7 @@ public class RecoveryIT
                 }
                 .setFileSystem( crashedFs )
                 .setMonitors( monitors )
-                .newImpermanentDatabase( directory.storeDir() )
+                .newImpermanentDatabase( directory.databaseDir() )
                 .shutdown();
 
         // then
@@ -458,7 +462,7 @@ public class RecoveryIT
         {
             // Here we verify that the neostore contents, record by record are exactly the same when comparing
             // the store as it was right after the checkpoint with the store as it was right after reverse recovery completed.
-            assertSameStoreContents( checkPointFs, reversedFs.get(), directory.databaseDir() );
+            assertSameStoreContents( checkPointFs, reversedFs.get(), directory.databaseLayout() );
         }
         finally
         {
@@ -472,20 +476,21 @@ public class RecoveryIT
         return ((GraphDatabaseAPI)db).getDependencyResolver().resolveDependency( TransactionIdStore.class ).getLastClosedTransactionId();
     }
 
-    private static void assertSameStoreContents( EphemeralFileSystemAbstraction fs1, EphemeralFileSystemAbstraction fs2, File storeDir )
+    private static void assertSameStoreContents( EphemeralFileSystemAbstraction fs1, EphemeralFileSystemAbstraction fs2, DatabaseLayout databaseLayout )
     {
         NullLogProvider logProvider = NullLogProvider.getInstance();
         VersionContextSupplier contextSupplier = EmptyVersionContextSupplier.EMPTY;
         try (
+                ThreadPoolJobScheduler jobScheduler = new ThreadPoolJobScheduler();
                 PageCache pageCache1 = new ConfiguringPageCacheFactory( fs1, defaults(), PageCacheTracer.NULL,
-                        PageCursorTracerSupplier.NULL, NullLog.getInstance(), contextSupplier )
+                        PageCursorTracerSupplier.NULL, NullLog.getInstance(), contextSupplier, jobScheduler )
                         .getOrCreatePageCache();
                 PageCache pageCache2 = new ConfiguringPageCacheFactory( fs2, defaults(), PageCacheTracer.NULL,
-                        PageCursorTracerSupplier.NULL, NullLog.getInstance(), contextSupplier )
+                        PageCursorTracerSupplier.NULL, NullLog.getInstance(), contextSupplier, jobScheduler )
                         .getOrCreatePageCache();
-                NeoStores store1 = new StoreFactory( storeDir, defaults(), new DefaultIdGeneratorFactory( fs1 ),
+                NeoStores store1 = new StoreFactory( databaseLayout, defaults(), new DefaultIdGeneratorFactory( fs1 ),
                         pageCache1, fs1, logProvider, contextSupplier ).openAllNeoStores();
-                NeoStores store2 = new StoreFactory( storeDir, defaults(), new DefaultIdGeneratorFactory( fs2 ),
+                NeoStores store2 = new StoreFactory( databaseLayout, defaults(), new DefaultIdGeneratorFactory( fs2 ),
                         pageCache2, fs2, logProvider, contextSupplier ).openAllNeoStores()
                 )
         {
@@ -801,7 +806,7 @@ public class RecoveryIT
         File restoreDbStore = directory.storeDir( "restore-db" );
         File restoreDbStoreDir = directory.databaseDir( restoreDbStore );
         move( fileSystemRule.get(), this.directory.databaseDir(), restoreDbStoreDir );
-        return restoreDbStore;
+        return restoreDbStoreDir;
     }
 
     private static void move( FileSystemAbstraction fs, File fromDirectory, File toDirectory ) throws IOException
@@ -820,8 +825,12 @@ public class RecoveryIT
 
     private static GraphDatabaseAPI startDatabase( File storeDir, EphemeralFileSystemAbstraction fs, UpdateCapturingIndexProvider indexProvider )
     {
-        return (GraphDatabaseAPI) new TestGraphDatabaseFactory().setFileSystem( fs ).setKernelExtensions(
-                singletonList( new IndexExtensionFactory( indexProvider ) ) ).newImpermanentDatabase( storeDir );
+        return (GraphDatabaseAPI) new TestGraphDatabaseFactory()
+                .setFileSystem( fs )
+                .setKernelExtensions( singletonList( new IndexExtensionFactory( indexProvider ) ) )
+                .newImpermanentDatabaseBuilder( storeDir )
+                .setConfig( default_schema_provider, indexProvider.getProviderDescriptor().name() )
+                .newGraphDatabase();
     }
 
     private GraphDatabaseService startDatabase( File storeDir )
@@ -869,9 +878,9 @@ public class RecoveryIT
         }
 
         @Override
-        public IndexCapability getCapability()
+        public IndexCapability getCapability( StoreIndexDescriptor descriptor )
         {
-            return actual.getCapability();
+            return actual.getCapability( descriptor );
         }
 
         @Override

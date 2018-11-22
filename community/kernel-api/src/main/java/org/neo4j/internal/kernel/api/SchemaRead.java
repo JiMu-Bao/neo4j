@@ -152,10 +152,25 @@ public interface SchemaRead
      *
      * @param index The index of interest
      * @param nodeId node id to match.
+     * @param propertyKeyId the indexed property to look at (composite indexes apply to more than one property, so we need to specify this)
      * @param value the property value
      * @return number of index entries for the given {@code nodeId} and {@code value}.
      */
-    long nodesCountIndexed( IndexReference index, long nodeId, Value value ) throws KernelException;
+    long nodesCountIndexed( IndexReference index, long nodeId, int propertyKeyId, Value value ) throws KernelException;
+
+    /**
+     * Returns how many updates that have been applied to the index since the last sampling, and total index size at the last sampling.
+     *
+     * Results are written to a {@link Register.DoubleLongRegister}, writing the update count into the first long, and
+     * the size into the second.
+     *
+     * @param index The index of interest
+     * @param target A {@link Register.DoubleLongRegister} to which to write the update count and size.
+     * @return {@code target}
+     * @throws IndexNotFoundKernelException if the index does not exist.
+     */
+    Register.DoubleLongRegister indexUpdatesAndSize( IndexReference index, Register.DoubleLongRegister target )
+            throws IndexNotFoundKernelException;
 
     /**
      * Returns the number of unique entries and the total number of entries in an index.
@@ -168,22 +183,9 @@ public interface SchemaRead
      * @return {@code target}
      * @throws IndexNotFoundKernelException if the index does not exist.
      */
-    Register.DoubleLongRegister indexUpdatesAndSize( IndexReference index, Register.DoubleLongRegister target )
-            throws IndexNotFoundKernelException;
-
-    /**
-     * Returns the last recorded size of an index, and how many updates that have been applied to the index since then.
-     *
-     * Results are written to a {@link Register.DoubleLongRegister}, writing the update count into the first long, and
-     * the size into the second.
-     *
-     * @param index The index of interest
-     * @param target A {@link Register.DoubleLongRegister} to which to write the update count and size.
-     * @return {@code target}
-     * @throws IndexNotFoundKernelException if the index does not exist.
-     */
     Register.DoubleLongRegister indexSample( IndexReference index, Register.DoubleLongRegister target )
             throws IndexNotFoundKernelException;
+
     /**
      * Finds all constraints for the given schema
      *
@@ -238,15 +240,6 @@ public interface SchemaRead
      * @return the state associated with the key or a new value if non-existing
      */
     <K, V> V schemaStateGetOrCreate( K key, Function<K, V> creator );
-
-    /**
-     * Returns the state associated with the key or <tt>null</tt> if nothing assocated with key
-     * @param key The key to access
-     * @param <K> The type of the key
-     * @param <V> The type of the assocated value
-     * @return The value associated with the given key or <tt>null</tt>
-     */
-    <K, V> V schemaStateGet( K key );
 
     /**
      * Flush the schema state

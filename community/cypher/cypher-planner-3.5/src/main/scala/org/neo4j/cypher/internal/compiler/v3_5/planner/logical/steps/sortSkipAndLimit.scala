@@ -21,18 +21,22 @@ package org.neo4j.cypher.internal.compiler.v3_5.planner.logical.steps
 
 import org.neo4j.cypher.internal.compiler.v3_5.planner.logical._
 import org.neo4j.cypher.internal.ir.v3_5._
-import org.neo4j.cypher.internal.planner.v3_5.spi.PlanningAttributes.{Cardinalities, Solveds}
-import org.neo4j.cypher.internal.v3_5.logical.plans.{Ascending, ColumnOrder, Descending, LogicalPlan}
+import org.neo4j.cypher.internal.v3_5.logical.plans._
 import org.opencypher.v9_0.ast.{AscSortItem, DescSortItem, SortItem}
 import org.opencypher.v9_0.expressions.{Expression, Variable}
 import org.opencypher.v9_0.util.{FreshIdNameGenerator, InternalException}
 
-object sortSkipAndLimit extends PlanTransformer[PlannerQuery] {
+object sortSkipAndLimit extends PlanTransformerWithRequiredOrder {
 
-  def apply(plan: LogicalPlan, query: PlannerQuery, context: LogicalPlanningContext, solveds: Solveds, cardinalities: Cardinalities): LogicalPlan = query.horizon match {
+  /**
+    * @param query query.interestingOrder will be the one marked as solved.
+    * @param interestingOrder this order can potentially be different from query.providedOrder. It can contain renames and
+    *                      will be used to check if we need to sort.
+    */
+  def apply(plan: LogicalPlan, query: PlannerQuery, interestingOrder: InterestingOrder, context: LogicalPlanningContext): LogicalPlan = query.horizon match {
     case p: QueryProjection =>
       val shuffle = p.shuffle
-      val producedPlan = (shuffle.sortItems.toList, shuffle.skip, shuffle.limit) match {
+       (shuffle.sortItems.toList, shuffle.skip, shuffle.limit) match {
         case (Nil, skip, limit) =>
           addLimit(limit, addSkip(skip, plan, context), context)
 
@@ -87,21 +91,31 @@ object sortSkipAndLimit extends PlanTransformer[PlannerQuery] {
             (projectItem, newSortItem)
           }.unzip
 
-          // Project all variables needed for sort in two steps
-          // First the ones that are part of projection list and may introduce variables that are needed for the second projection
-          val preProjected1 = projection(plan, projectItemsForAliases, projectItemsForAliases, context, solveds, cardinalities)
-          // And then all the ones from unaliased sort items that may refer to newly introduced variables
-          val preProjected2 = projection(preProjected1, projectItemsForUnaliasedSortItems.toMap, Map.empty, context, solveds, cardinalities)
-
           // plan the actual sort
           val newSortItems = aliasedSortItems ++ newUnaliasedSortItems
           val columnOrders = newSortItems.map(columnOrder)
-          val sortedPlan = context.logicalPlanProducer.planSort(preProjected2, columnOrders, sortItems, context)
+
+          val sortedPlan =
+            // The !interestingOrder.isEmpty check is only here because we do not recognize more complex required orders
+            // at the moment and do not want to abort sorting only because an empty required order is satisfied by anything.
+            if (interestingOrder.required.nonEmpty && interestingOrder.satisfiedBy(context.planningAttributes.providedOrders.get(plan.id))) {
+              // We can't override solved, but right now we want to set it such that it solves ORDER BY
+              // on a plan that has already assigned solved.
+              // Use query.interestingOrder to mark the original required order as solved.
+              context.logicalPlanProducer.updateSolvedForSortedItems(plan, sortItems, query.interestingOrder, context)
+            } else {
+              // Project all variables needed for sort in two steps
+              // First the ones that are part of projection list and may introduce variables that are needed for the second projection
+              val preProjected1 = projection(plan, projectItemsForAliases, projectItemsForAliases, interestingOrder, context)
+              // And then all the ones from unaliased sort items that may refer to newly introduced variables
+              val preProjected2 = projection(preProjected1, projectItemsForUnaliasedSortItems.toMap, Map.empty, interestingOrder, context)
+
+              // Use query.interestingOrder to mark the original required order as solved.
+              context.logicalPlanProducer.planSort(preProjected2, columnOrders, sortItems, query.interestingOrder, context)
+            }
 
           addLimit(limit, addSkip(skip, sortedPlan, context), context)
       }
-
-      producedPlan
 
     case _ => plan
   }
@@ -124,9 +138,9 @@ object sortSkipAndLimit extends PlanTransformer[PlannerQuery] {
     */
   private def extractProjectItem(projection: QueryProjection, name: String): Option[((String, Expression), Boolean)] = {
     projection match {
-      case RegularQueryProjection(projections, _) => projections.get(name).map(exp => (name -> exp, true))
-      case DistinctQueryProjection(projections, _) => projections.get(name).map(exp => (name -> exp, false))
-      case AggregatingQueryProjection(groupingExpressions, aggregationExpressions, _) =>
+      case RegularQueryProjection(projections, _, _) => projections.get(name).map(exp => (name -> exp, true))
+      case DistinctQueryProjection(projections, _, _) => projections.get(name).map(exp => (name -> exp, false))
+      case AggregatingQueryProjection(groupingExpressions, aggregationExpressions, _, _) =>
         (groupingExpressions ++ aggregationExpressions).get(name).map(exp => (name -> exp, false))
     }
   }

@@ -92,7 +92,7 @@ import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
  * {@link #getOnlineAccessor(StoreIndexDescriptor, IndexSamplingConfig) online accessor} to
  * write to the index.
  */
-public abstract class IndexProvider extends LifecycleAdapter implements Comparable<IndexProvider>
+public abstract class IndexProvider extends LifecycleAdapter
 {
     public interface Monitor
     {
@@ -147,7 +147,7 @@ public abstract class IndexProvider extends LifecycleAdapter implements Comparab
     }
 
     public static final IndexProvider EMPTY =
-            new IndexProvider( new IndexProviderDescriptor( "no-index-provider", "1.0" ), -1, IndexDirectoryStructure.NONE )
+            new IndexProvider( new IndexProviderDescriptor( "no-index-provider", "1.0" ), IndexDirectoryStructure.NONE )
             {
                 private final IndexAccessor singleWriter = IndexAccessor.EMPTY;
                 private final IndexPopulator singlePopulator = IndexPopulator.EMPTY;
@@ -171,7 +171,7 @@ public abstract class IndexProvider extends LifecycleAdapter implements Comparab
                 }
 
                 @Override
-                public IndexCapability getCapability()
+                public IndexCapability getCapability( StoreIndexDescriptor descriptor )
                 {
                     return IndexCapability.NO_CAPABILITY;
                 }
@@ -190,22 +190,19 @@ public abstract class IndexProvider extends LifecycleAdapter implements Comparab
                 }
             };
 
-    protected final int priority;
     private final IndexProviderDescriptor providerDescriptor;
     private final IndexDirectoryStructure.Factory directoryStructureFactory;
     private final IndexDirectoryStructure directoryStructure;
 
     protected IndexProvider( IndexProvider copySource )
     {
-        this( copySource.providerDescriptor, copySource.priority, copySource.directoryStructureFactory );
+        this( copySource.providerDescriptor, copySource.directoryStructureFactory );
     }
 
-    protected IndexProvider( IndexProviderDescriptor descriptor, int priority,
-                             IndexDirectoryStructure.Factory directoryStructureFactory )
+    protected IndexProvider( IndexProviderDescriptor descriptor, IndexDirectoryStructure.Factory directoryStructureFactory )
     {
         this.directoryStructureFactory = directoryStructureFactory;
         assert descriptor != null;
-        this.priority = priority;
         this.providerDescriptor = descriptor;
         this.directoryStructure = directoryStructureFactory.forProvider( descriptor );
     }
@@ -240,8 +237,10 @@ public abstract class IndexProvider extends LifecycleAdapter implements Comparab
 
     /**
      * Return {@link IndexCapability} for this index provider.
+     *
+     * @param descriptor The specific {@link StoreIndexDescriptor} to get the capabilities for, in case it matters.
      */
-    public abstract IndexCapability getCapability();
+    public abstract IndexCapability getCapability( StoreIndexDescriptor descriptor );
 
     /**
      * @return a description of this index provider
@@ -249,12 +248,6 @@ public abstract class IndexProvider extends LifecycleAdapter implements Comparab
     public IndexProviderDescriptor getProviderDescriptor()
     {
         return providerDescriptor;
-    }
-
-    @Override
-    public int compareTo( IndexProvider o )
-    {
-        return Integer.compare( this.priority, o.priority );
     }
 
     @Override
@@ -271,16 +264,13 @@ public abstract class IndexProvider extends LifecycleAdapter implements Comparab
 
         IndexProvider other = (IndexProvider) o;
 
-        return priority == other.priority &&
-               providerDescriptor.equals( other.providerDescriptor );
+        return providerDescriptor.equals( other.providerDescriptor );
     }
 
     @Override
     public int hashCode()
     {
-        int result = priority;
-        result = 31 * result + providerDescriptor.hashCode();
-        return result;
+        return providerDescriptor.hashCode();
     }
 
     /**

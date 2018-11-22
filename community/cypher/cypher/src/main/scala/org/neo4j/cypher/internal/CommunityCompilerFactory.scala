@@ -23,7 +23,7 @@ import org.neo4j.cypher.internal.compatibility.v2_3.helpers._
 import org.neo4j.cypher.internal.compatibility.v3_1.helpers._
 import org.neo4j.cypher.internal.compatibility.v3_4.Cypher34Planner
 import org.neo4j.cypher.internal.compatibility.v3_5.Cypher35Planner
-import org.neo4j.cypher.internal.compatibility.{CommunityRuntimeContextCreator, CypherCurrentCompiler, v2_3, v3_1}
+import org.neo4j.cypher.internal.compatibility._
 import org.neo4j.cypher.internal.compiler.v3_5.CypherPlannerConfiguration
 import org.neo4j.cypher.internal.runtime.interpreted.LastCommittedTxIdProvider
 import org.neo4j.cypher.{CypherPlannerOption, CypherRuntimeOption, CypherUpdateStrategy, CypherVersion}
@@ -38,7 +38,9 @@ import org.opencypher.v9_0.util.InvalidArgumentException
   */
 class CommunityCompilerFactory(graph: GraphDatabaseQueryService,
                                kernelMonitors: KernelMonitors,
-                               logProvider: LogProvider
+                               logProvider: LogProvider,
+                               plannerConfig: CypherPlannerConfiguration,
+                               runtimeConfig: CypherRuntimeConfiguration
                               ) extends CompilerFactory {
 
   private val log: Log = logProvider.getLog(getClass)
@@ -46,23 +48,22 @@ class CommunityCompilerFactory(graph: GraphDatabaseQueryService,
   override def createCompiler(cypherVersion: CypherVersion,
                               cypherPlanner: CypherPlannerOption,
                               cypherRuntime: CypherRuntimeOption,
-                              cypherUpdateStrategy: CypherUpdateStrategy,
-                              config: CypherPlannerConfiguration
+                              cypherUpdateStrategy: CypherUpdateStrategy
                              ): Compiler = {
 
     (cypherVersion, cypherPlanner) match {
 
         // 2.3
       case (CypherVersion.v2_3, CypherPlannerOption.rule) =>
-        v2_3.Rule23Compiler(graph, as2_3(config), Clock.SYSTEM_CLOCK, kernelMonitors)
+        v2_3.Rule23Compiler(graph, as2_3(plannerConfig), Clock.SYSTEM_CLOCK, kernelMonitors)
       case (CypherVersion.v2_3, _) =>
-        v2_3.Cost23Compiler(graph, as2_3(config), Clock.SYSTEM_CLOCK, kernelMonitors, log, cypherPlanner, cypherRuntime)
+        v2_3.Cost23Compiler(graph, as2_3(plannerConfig), Clock.SYSTEM_CLOCK, kernelMonitors, log, cypherPlanner, cypherRuntime)
 
         // 3.1
       case (CypherVersion.v3_1, CypherPlannerOption.rule) =>
-        v3_1.Rule31Compiler(graph, as3_1(config), MasterCompiler.CLOCK, kernelMonitors)
+        v3_1.Rule31Compiler(graph, as3_1(plannerConfig), MasterCompiler.CLOCK, kernelMonitors)
       case (CypherVersion.v3_1, _) =>
-        v3_1.Cost31Compiler(graph, as3_1(config), MasterCompiler.CLOCK, kernelMonitors, log, cypherPlanner, cypherRuntime, cypherUpdateStrategy)
+        v3_1.Cost31Compiler(graph, as3_1(plannerConfig), MasterCompiler.CLOCK, kernelMonitors, log, cypherPlanner, cypherRuntime, cypherUpdateStrategy)
 
         // 3.3 or 3.5 + rule
       case (_, CypherPlannerOption.rule) =>
@@ -71,20 +72,20 @@ class CommunityCompilerFactory(graph: GraphDatabaseQueryService,
         // 3.4
       case (CypherVersion.v3_4, _) =>
         CypherCurrentCompiler(
-          Cypher34Planner(config, MasterCompiler.CLOCK, kernelMonitors, log,
+          Cypher34Planner(plannerConfig, MasterCompiler.CLOCK, kernelMonitors, log,
             cypherPlanner, cypherUpdateStrategy, LastCommittedTxIdProvider(graph)),
-          CommunityRuntimeFactory.getRuntime(cypherRuntime, config.useErrorsOverWarnings),
-          CommunityRuntimeContextCreator,
+          CommunityRuntimeFactory.getRuntime(cypherRuntime, plannerConfig.useErrorsOverWarnings),
+          CommunityRuntimeContextCreator(plannerConfig),
           kernelMonitors
         )
 
         // 3.5
       case (CypherVersion.v3_5, _) =>
         CypherCurrentCompiler(
-          Cypher35Planner(config, MasterCompiler.CLOCK, kernelMonitors, log,
+          Cypher35Planner(plannerConfig, MasterCompiler.CLOCK, kernelMonitors, log,
                           cypherPlanner, cypherUpdateStrategy, LastCommittedTxIdProvider(graph)),
-          CommunityRuntimeFactory.getRuntime(cypherRuntime, config.useErrorsOverWarnings),
-          CommunityRuntimeContextCreator,
+          CommunityRuntimeFactory.getRuntime(cypherRuntime, plannerConfig.useErrorsOverWarnings),
+          CommunityRuntimeContextCreator(plannerConfig),
           kernelMonitors
         )
     }

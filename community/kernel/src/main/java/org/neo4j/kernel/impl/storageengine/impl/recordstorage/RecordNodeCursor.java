@@ -70,7 +70,7 @@ public class RecordNodeCursor extends NodeRecord implements StorageNodeCursor
         {
             pageCursor = nodePage( reference );
         }
-        this.next = reference;
+        this.next = reference >= 0 ? reference : NO_ID;
         //This marks the cursor as a "single cursor"
         this.highMark = NO_ID;
         this.nextStoreReference = NO_ID;
@@ -78,7 +78,7 @@ public class RecordNodeCursor extends NodeRecord implements StorageNodeCursor
     }
 
     @Override
-    public long nodeReference()
+    public long entityReference()
     {
         return getId();
     }

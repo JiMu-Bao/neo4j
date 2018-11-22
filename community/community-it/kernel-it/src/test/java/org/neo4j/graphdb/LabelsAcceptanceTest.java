@@ -36,21 +36,20 @@ import javax.annotation.Nonnull;
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies;
 import org.neo4j.graphdb.facade.GraphDatabaseFacadeFactory;
 import org.neo4j.graphdb.factory.GraphDatabaseBuilder;
-import org.neo4j.graphdb.factory.module.CommunityEditionModule;
-import org.neo4j.graphdb.factory.module.EditionModule;
 import org.neo4j.graphdb.factory.module.PlatformModule;
+import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule;
+import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule;
+import org.neo4j.graphdb.factory.module.id.IdContextFactoryBuilder;
 import org.neo4j.helpers.collection.Iterables;
 import org.neo4j.internal.kernel.api.LabelSet;
 import org.neo4j.internal.kernel.api.NodeCursor;
 import org.neo4j.internal.kernel.api.PropertyCursor;
-import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.kernel.api.KernelTransaction;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
 import org.neo4j.kernel.impl.factory.DatabaseInfo;
 import org.neo4j.kernel.impl.store.UnderlyingStorageException;
 import org.neo4j.kernel.impl.store.id.IdGenerator;
-import org.neo4j.kernel.impl.store.id.IdGeneratorFactory;
 import org.neo4j.kernel.impl.store.id.IdType;
 import org.neo4j.kernel.impl.store.id.configuration.CommunityIdTypeConfigurationProvider;
 import org.neo4j.kernel.impl.store.id.configuration.IdTypeConfiguration;
@@ -701,8 +700,7 @@ public class LabelsAcceptanceTest
     {
         final EphemeralIdGenerator.Factory idFactory = new EphemeralIdGenerator.Factory()
         {
-            private IdTypeConfigurationProvider
-                    idTypeConfigurationProvider = new CommunityIdTypeConfigurationProvider();
+            private IdTypeConfigurationProvider idTypeConfigurationProvider = new CommunityIdTypeConfigurationProvider();
 
             @Override
             public IdGenerator open( File fileName, int grabSize, IdType idType, LongSupplier highId, long maxId )
@@ -751,17 +749,8 @@ public class LabelsAcceptanceTest
                                     Config config,
                                     GraphDatabaseFacadeFactory.Dependencies dependencies )
                             {
-                                Function<PlatformModule,EditionModule> factory =
-                                        platformModule -> new CommunityEditionModule( platformModule )
-                                        {
-                                            @Override
-                                            protected IdGeneratorFactory createIdGeneratorFactory(
-                                                    FileSystemAbstraction fs,
-                                                    IdTypeConfigurationProvider idTypeConfigurationProvider )
-                                            {
-                                                return idFactory;
-                                            }
-                                        };
+                                Function<PlatformModule,AbstractEditionModule> factory =
+                                        platformModule -> new CommunityEditionModuleWithCustomIdContextFactory( platformModule, idFactory );
                                 new GraphDatabaseFacadeFactory( DatabaseInfo.COMMUNITY, factory )
                                 {
 
@@ -788,6 +777,17 @@ public class LabelsAcceptanceTest
             Node node = db.createNode( labels );
             tx.success();
             return node;
+        }
+    }
+
+    private static class CommunityEditionModuleWithCustomIdContextFactory extends CommunityEditionModule
+    {
+        CommunityEditionModuleWithCustomIdContextFactory( PlatformModule platformModule, EphemeralIdGenerator.Factory idFactory )
+        {
+            super( platformModule );
+            idContextFactory = IdContextFactoryBuilder.of( platformModule.fileSystem, platformModule.jobScheduler )
+                    .withIdGenerationFactoryProvider( any -> idFactory )
+                    .build();
         }
     }
 }

@@ -25,6 +25,14 @@ case class SuboptimalIndexForConstainsQueryNotification(label: String, propertyK
 
 case class SuboptimalIndexForEndsWithQueryNotification(label: String, propertyKeys: Seq[String]) extends InternalNotification
 
+case object StartUnavailableFallback extends InternalNotification
+
+case class CreateUniqueUnavailableFallback(position: InputPosition) extends InternalNotification
+
+case class CreateUniqueDeprecated(position: InputPosition) extends InternalNotification
+
+case object RulePlannerUnavailableFallbackNotification extends InternalNotification
+
 case object PlannerUnsupportedNotification extends InternalNotification
 
 case object RuntimeUnsupportedNotification extends InternalNotification
@@ -55,6 +63,8 @@ case class ProcedureWarningNotification(position: InputPosition, procedure: Stri
 
 case class DeprecatedFieldNotification(position: InputPosition, procedure: String, field: String) extends InternalNotification
 
-case object DeprecatedPlannerNotification extends InternalNotification
+case object DeprecatedRulePlannerNotification extends InternalNotification
+
+case object DeprecatedCompiledRuntimeNotification extends InternalNotification
 
 case class ExperimentalFeatureNotification(msg: String) extends InternalNotification

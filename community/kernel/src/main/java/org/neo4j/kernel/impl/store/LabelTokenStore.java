@@ -39,6 +39,7 @@ public class LabelTokenStore extends TokenStore<LabelTokenRecord>
 
     public LabelTokenStore(
             File file,
+            File idFile,
             Config config,
             IdGeneratorFactory idGeneratorFactory,
             PageCache pageCache,
@@ -47,7 +48,7 @@ public class LabelTokenStore extends TokenStore<LabelTokenRecord>
             RecordFormats recordFormats,
             OpenOption... openOptions )
     {
-        super( file, config, IdType.LABEL_TOKEN, idGeneratorFactory, pageCache,
+        super( file, idFile, config, IdType.LABEL_TOKEN, idGeneratorFactory, pageCache,
                 logProvider, nameStore, TYPE_DESCRIPTOR, recordFormats.labelToken(),
                 recordFormats.storeVersion(), openOptions );
     }

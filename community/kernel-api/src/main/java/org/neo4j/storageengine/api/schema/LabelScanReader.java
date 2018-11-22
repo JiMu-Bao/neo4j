@@ -28,6 +28,11 @@ import org.neo4j.graphdb.Resource;
 public interface LabelScanReader extends Resource
 {
     /**
+     * Used as a marker to ignore the "fromId" in calls to {@link #nodesWithAnyOfLabels(long, int[])}.
+     */
+    long NO_ID = -1;
+
+    /**
      * @param labelId label token id.
      * @return node ids with the given {@code labelId}.
      */
@@ -45,11 +50,21 @@ public interface LabelScanReader extends Resource
      * @param labelIds label token ids.
      * @return node ids with any of the given label ids.
      */
-    PrimitiveLongResourceIterator nodesWithAnyOfLabels( int... labelIds );
+    default PrimitiveLongResourceIterator nodesWithAnyOfLabels( int[] labelIds )
+    {
+        return nodesWithAnyOfLabels( NO_ID, labelIds );
+    }
+
+    /**
+     * @param fromId entity id to start at, exclusive, i.e. the given {@code fromId} will not be included in the result.
+     * @param labelIds label token ids.
+     * @return node ids with any of the given label ids.
+     */
+    PrimitiveLongResourceIterator nodesWithAnyOfLabels( long fromId, int[] labelIds );
 
     /**
      * @param labelIds label token ids.
      * @return node ids with all of the given label ids.
      */
-    PrimitiveLongResourceIterator nodesWithAllLabels( int... labelIds );
+    PrimitiveLongResourceIterator nodesWithAllLabels( int[] labelIds );
 }

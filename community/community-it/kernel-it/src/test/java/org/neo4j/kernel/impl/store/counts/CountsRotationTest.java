@@ -57,9 +57,7 @@ import org.neo4j.kernel.impl.api.CountsAccessor;
 import org.neo4j.kernel.impl.api.CountsVisitor;
 import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
 import org.neo4j.kernel.impl.storageengine.impl.recordstorage.RecordStorageEngine;
-import org.neo4j.kernel.impl.store.MetaDataStore;
 import org.neo4j.kernel.impl.store.NodeStore;
-import org.neo4j.kernel.impl.store.StoreFactory;
 import org.neo4j.kernel.impl.store.counts.keys.CountsKey;
 import org.neo4j.kernel.impl.store.counts.keys.CountsKeyFactory;
 import org.neo4j.kernel.impl.store.kvstore.RotationTimeoutException;
@@ -90,8 +88,6 @@ import static org.neo4j.register.Registers.newDoubleLongRegister;
 
 public class CountsRotationTest
 {
-    private static final String COUNTS_STORE_BASE = MetaDataStore.DEFAULT_NAME + StoreFactory.COUNTS_STORE;
-
     private final Label A = Label.label( "A" );
     private final Label B = Label.label( "B" );
     private final Label C = Label.label( "C" );
@@ -108,7 +104,6 @@ public class CountsRotationTest
                                           .around( testDir );
 
     private FileSystemAbstraction fs;
-    private File dir;
     private GraphDatabaseBuilder dbBuilder;
     private PageCache pageCache;
 
@@ -116,9 +111,8 @@ public class CountsRotationTest
     public void setup()
     {
         fs = fsRule.get();
-        dir = testDir.storeDir();
         dbBuilder = new TestGraphDatabaseFactory().setFileSystem( new UncloseableDelegatingFileSystemAbstraction( fs ) )
-                .newImpermanentDatabaseBuilder( dir );
+                .newImpermanentDatabaseBuilder( testDir.databaseDir() );
         pageCache = pcRule.getPageCache( fs );
     }
 
@@ -332,7 +326,7 @@ public class CountsRotationTest
         adversary.disable();
 
         GraphDatabaseService db = AdversarialPageCacheGraphDatabaseFactory.create( fs, adversary )
-                .newEmbeddedDatabaseBuilder( dir )
+                .newEmbeddedDatabaseBuilder( testDir.databaseDir() )
                 .newGraphDatabase();
 
         CountDownLatch txStartLatch = new CountDownLatch( 1 );
@@ -395,10 +389,10 @@ public class CountsRotationTest
     private CountsTracker createCountsTracker( PageCache pageCache, Config config )
     {
         return new CountsTracker( NullLogProvider.getInstance(), fs, pageCache, config,
-                new File( testDir.databaseDir(), COUNTS_STORE_BASE ), EmptyVersionContextSupplier.EMPTY );
+                testDir.databaseLayout(), EmptyVersionContextSupplier.EMPTY );
     }
 
-    private void checkPoint( GraphDatabaseAPI db ) throws IOException
+    private static void checkPoint( GraphDatabaseAPI db ) throws IOException
     {
         TriggerInfo triggerInfo = new SimpleTriggerInfo( "test" );
         db.getDependencyResolver().resolveDependency( CheckPointer.class ).forceCheckPoint( triggerInfo );
@@ -406,12 +400,12 @@ public class CountsRotationTest
 
     private File alphaStoreFile()
     {
-        return new File( testDir.databaseDir(), COUNTS_STORE_BASE + CountsTracker.LEFT );
+        return testDir.databaseLayout().countStoreA();
     }
 
     private File betaStoreFile()
     {
-        return new File( testDir.databaseDir(), COUNTS_STORE_BASE + CountsTracker.RIGHT );
+        return testDir.databaseLayout().countStoreB();
     }
 
     private Collection<Pair<? extends CountsKey, Long>> allRecords( CountsVisitor.Visitable store )

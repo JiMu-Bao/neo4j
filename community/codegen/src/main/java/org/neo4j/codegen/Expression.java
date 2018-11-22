@@ -482,7 +482,7 @@ public abstract class Expression extends ExpressionTemplate
         }
         else
         {
-            throw new IllegalArgumentException( "Not a valid constant!" );
+            throw new IllegalArgumentException( "Not a valid constant: " + value );
         }
 
         return new Expression( reference )
@@ -701,6 +701,18 @@ public abstract class Expression extends ExpressionTemplate
     public static Expression cast( Class<?> type, Expression expression )
     {
         return cast( typeReference( type ), expression );
+    }
+
+    public static Expression instanceOf( final TypeReference typeToCheck, Expression expression )
+    {
+        return new Expression( typeReference( boolean.class ) )
+        {
+            @Override
+            public void accept( ExpressionVisitor visitor )
+            {
+                visitor.instanceOf( typeToCheck, expression );
+            }
+        };
     }
 
     public static Expression cast( final TypeReference type, Expression expression )

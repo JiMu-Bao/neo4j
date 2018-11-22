@@ -28,13 +28,14 @@ import org.neo4j.cypher.internal.compatibility.v3_4.Cypher34Planner
 import org.neo4j.cypher.internal.compatibility.{CommunityRuntimeContextCreator, CypherCurrentCompiler, CypherPlanner, RuntimeContext}
 import org.neo4j.cypher.internal.compiler.v3_5.{CypherPlannerConfiguration, StatsDivergenceCalculator}
 import org.neo4j.cypher.internal.runtime.interpreted.CSVResources
-import org.neo4j.cypher.internal.{CacheTracer, CommunityRuntimeFactory, PreParsedQuery}
+import org.neo4j.cypher.internal._
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.factory.GraphDatabaseSettings
 import org.neo4j.helpers.collection.Pair
+import org.neo4j.kernel.configuration.Config
 import org.neo4j.kernel.impl.util.ValueUtils
 import org.neo4j.logging.AssertableLogProvider.inLog
-import org.neo4j.logging.{AssertableLogProvider, Log, NullLog}
+import org.neo4j.logging.{AssertableLogProvider, Log, NullLog, NullLogProvider}
 import org.opencypher.v9_0.frontend.phases.CompilationPhaseTracer
 import org.opencypher.v9_0.util.DummyPosition
 import org.opencypher.v9_0.util.test_helpers.CypherFunSuite
@@ -57,7 +58,7 @@ class CypherCompilerAstCacheAcceptanceTest extends CypherFunSuite with GraphData
       csvBufferSize = CSVResources.DEFAULT_BUFFER_SIZE,
       nonIndexedLabelWarningThreshold = 10000L,
       planWithMinimumCardinalityEstimates = true,
-      disableCompiledExpressions = false
+      lenientCreateRelationship = false
     )
   }
 
@@ -78,12 +79,12 @@ class CypherCompilerAstCacheAcceptanceTest extends CypherFunSuite with GraphData
     CypherCurrentCompiler(
       planner,
       CommunityRuntimeFactory.getRuntime(CypherRuntimeOption.default, disallowFallback = true),
-      CommunityRuntimeContextCreator,
+      CommunityRuntimeContextCreator(config),
       kernelMonitors)
 
   }
 
-  case class CacheCounts(hits: Int = 0, misses: Int = 0, flushes: Int = 0, evicted: Int = 0) {
+  case class CacheCounts(hits: Int = 0, misses: Int = 0, flushes: Int = 0, evicted: Int = 0, recompiled: Int = 0) {
     override def toString = s"hits = $hits, misses = $misses, flushes = $flushes, evicted = $evicted"
   }
 
@@ -102,6 +103,11 @@ class CypherCompilerAstCacheAcceptanceTest extends CypherFunSuite with GraphData
 
     override def queryCacheStale(key: Pair[AnyRef, ParameterTypeMap], secondsSincePlan: Int, metaData: String): Unit = {
       counts = counts.copy(evicted = counts.evicted + 1)
+    }
+
+    override def queryCacheRecompile(queryKey: Pair[AnyRef, ParameterTypeMap],
+                                     metaData: String): Unit = {
+      counts = counts.copy(recompiled = counts.recompiled + 1)
     }
   }
 
@@ -132,7 +138,7 @@ class CypherCompilerAstCacheAcceptanceTest extends CypherFunSuite with GraphData
   }
 
   private def runQuery(query: String, debugOptions: Set[String] = Set.empty, params: scala.Predef.Map[String, AnyRef] = Map.empty,
-                       cypherCompiler: CypherCurrentCompiler[RuntimeContext] = compiler): Unit = {
+                       cypherCompiler: Compiler = compiler): Unit = {
     import collection.JavaConverters._
 
     graph.withTx { tx =>
@@ -145,6 +151,7 @@ class CypherCompilerAstCacheAcceptanceTest extends CypherFunSuite with GraphData
         CypherPlannerOption.default,
         CypherRuntimeOption.default,
         CypherUpdateStrategy.default,
+        CypherExpressionEngineOption.default,
         debugOptions),
         noTracing, Set.empty, context, ValueUtils.asParameterMapValue(params.asJava))
       context.close(true)
@@ -324,5 +331,38 @@ class CypherCompilerAstCacheAcceptanceTest extends CypherFunSuite with GraphData
     runQuery("return $number", params = map2)
 
     counter.counts should equal(CacheCounts(hits = 1, misses = 1, flushes = 1))
+  }
+
+  test("should clear all compiler library caches") {
+    val compilerLibrary = createCompilerLibrary()
+    val compilers = CypherVersion.all.map { version =>
+      compilerLibrary.selectCompiler(version, CypherPlannerOption.default, CypherRuntimeOption.default, CypherUpdateStrategy.default)
+    }
+
+    compilers.foreach { compiler =>
+      runQuery("return 42", cypherCompiler = compiler) // Misses
+      runQuery("return 42", cypherCompiler = compiler) // Hits
+    }
+
+    compilerLibrary.clearCaches()
+
+    compilers.foreach { compiler =>
+      runQuery("return 42", cypherCompiler = compiler) // Misses
+    }
+
+    val numberOfTracingCompilers = compilers.size - 2 // The 2 oldest compilers (v2_3 and v3_1) does not support tracing
+    counter.counts should equal(CacheCounts(hits = numberOfTracingCompilers, misses = 2*numberOfTracingCompilers, flushes = 2*numberOfTracingCompilers))
+  }
+
+  private def createCompilerLibrary(): CompilerLibrary = {
+    val resolver = graph.getDependencyResolver
+    val monitors = kernelMonitors
+    val nullLogProvider = NullLogProvider.getInstance
+    val config = resolver.resolveDependency(classOf[Config])
+    val cypherConfig = CypherConfiguration.fromConfig(config)
+    val compilerFactory =
+      new CommunityCompilerFactory(graph, monitors, nullLogProvider,
+        cypherConfig.toCypherPlannerConfiguration(config), cypherConfig.toCypherRuntimeConfiguration)
+    new CompilerLibrary(compilerFactory)
   }
 }

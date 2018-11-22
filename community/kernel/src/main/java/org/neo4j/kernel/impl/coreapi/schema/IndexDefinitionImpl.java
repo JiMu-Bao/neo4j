@@ -27,9 +27,15 @@ import org.neo4j.graphdb.RelationshipType;
 import org.neo4j.graphdb.schema.IndexDefinition;
 import org.neo4j.hashing.HashFunction;
 import org.neo4j.internal.kernel.api.IndexReference;
+import org.neo4j.internal.kernel.api.TokenRead;
+import org.neo4j.internal.kernel.api.exceptions.KernelException;
+import org.neo4j.internal.kernel.api.schema.SchemaDescriptor;
 
 import static java.util.Arrays.asList;
 import static java.util.stream.Collectors.joining;
+import static org.neo4j.graphdb.Label.label;
+import static org.neo4j.graphdb.RelationshipType.withName;
+import static org.neo4j.helpers.collection.Iterables.stream;
 
 public class IndexDefinitionImpl implements IndexDefinition
 {
@@ -213,6 +219,12 @@ public class IndexDefinitionImpl implements IndexDefinition
     }
 
     @Override
+    public String getName()
+    {
+        return indexReference == null ? IndexReference.UNNAMED_INDEX : indexReference.name();
+    }
+
+    @Override
     public int hashCode()
     {
         HashFunction hf = HashFunction.incrementalXXH64();
@@ -295,6 +307,11 @@ public class IndexDefinitionImpl implements IndexDefinition
         }
         return "IndexDefinition[" + entityTokenType + ":" + entityTokens + " on:" + String.join( ",", propertyKeys ) + "]" +
                 (indexReference == null ? "" : " (" + indexReference + ")");
+    }
+
+    public static String labelNameList( Iterable<Label> labels, String prefix, String postfix )
+    {
+        return stream( labels ).map( Label::name ).collect( joining( ", ", prefix, postfix ) );
     }
 
     private void assertInUnterminatedTransaction()

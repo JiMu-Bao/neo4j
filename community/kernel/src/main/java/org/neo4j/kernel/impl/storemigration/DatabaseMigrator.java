@@ -19,14 +19,12 @@
  */
 package org.neo4j.kernel.impl.storemigration;
 
-import java.io.File;
-
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.api.ExplicitIndexProvider;
 import org.neo4j.kernel.impl.api.index.IndexProviderMap;
-import org.neo4j.kernel.impl.logging.LogService;
 import org.neo4j.kernel.impl.store.format.RecordFormats;
 import org.neo4j.kernel.impl.storemigration.monitoring.MigrationProgressMonitor;
 import org.neo4j.kernel.impl.storemigration.participant.CountsMigrator;
@@ -35,6 +33,8 @@ import org.neo4j.kernel.impl.storemigration.participant.NativeLabelScanStoreMigr
 import org.neo4j.kernel.impl.storemigration.participant.StoreMigrator;
 import org.neo4j.kernel.recovery.LogTailScanner;
 import org.neo4j.logging.LogProvider;
+import org.neo4j.logging.internal.LogService;
+import org.neo4j.scheduler.JobScheduler;
 
 /**
  * DatabaseMigrator collects all dependencies required for store migration,
@@ -54,12 +54,13 @@ public class DatabaseMigrator
     private final PageCache pageCache;
     private final RecordFormats format;
     private final LogTailScanner tailScanner;
+    private final JobScheduler jobScheduler;
 
     public DatabaseMigrator(
             MigrationProgressMonitor progressMonitor, FileSystemAbstraction fs,
             Config config, LogService logService, IndexProviderMap indexProviderMap,
             ExplicitIndexProvider indexProvider, PageCache pageCache,
-            RecordFormats format, LogTailScanner tailScanner )
+            RecordFormats format, LogTailScanner tailScanner, JobScheduler jobScheduler )
     {
         this.progressMonitor = progressMonitor;
         this.fs = fs;
@@ -70,14 +71,15 @@ public class DatabaseMigrator
         this.pageCache = pageCache;
         this.format = format;
         this.tailScanner = tailScanner;
+        this.jobScheduler = jobScheduler;
     }
 
     /**
      * Performs construction of {@link StoreUpgrader} and all of the necessary participants and performs store
      * migration if that is required.
-     * @param databaseDirectory database to migrate
+     * @param directoryStructure database to migrate
      */
-    public void migrate( File databaseDirectory )
+    public void migrate( DatabaseLayout directoryStructure )
     {
         LogProvider logProvider = logService.getInternalLogProvider();
         UpgradableDatabase upgradableDatabase = new UpgradableDatabase( new StoreVersionCheck( pageCache ), format, tailScanner );
@@ -85,7 +87,7 @@ public class DatabaseMigrator
                 logProvider );
 
         ExplicitIndexMigrator explicitIndexMigrator = new ExplicitIndexMigrator( fs, explicitIndexProvider, logProvider );
-        StoreMigrator storeMigrator = new StoreMigrator( fs, pageCache, config, logService );
+        StoreMigrator storeMigrator = new StoreMigrator( fs, pageCache, config, logService, jobScheduler );
         NativeLabelScanStoreMigrator nativeLabelScanStoreMigrator =
                 new NativeLabelScanStoreMigrator( fs, pageCache, config );
         CountsMigrator countsMigrator = new CountsMigrator( fs, pageCache, config );
@@ -96,6 +98,6 @@ public class DatabaseMigrator
         storeUpgrader.addParticipant( storeMigrator );
         storeUpgrader.addParticipant( nativeLabelScanStoreMigrator );
         storeUpgrader.addParticipant( countsMigrator );
-        storeUpgrader.migrateIfNeeded( databaseDirectory );
+        storeUpgrader.migrateIfNeeded( directoryStructure );
     }
 }

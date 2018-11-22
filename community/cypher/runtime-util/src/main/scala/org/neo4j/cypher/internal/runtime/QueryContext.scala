@@ -22,19 +22,26 @@ package org.neo4j.cypher.internal.runtime
 import java.net.URL
 
 import org.eclipse.collections.api.iterator.LongIterator
-import org.neo4j.cypher.internal.planner.v3_5.spi.{IdempotentResult, IndexDescriptor, KernelStatisticProvider, TokenContext}
+import org.neo4j.cypher.internal.planner.v3_5.spi.IdempotentResult
+import org.neo4j.cypher.internal.planner.v3_5.spi.IndexDescriptor
+import org.neo4j.cypher.internal.planner.v3_5.spi.KernelStatisticProvider
+import org.neo4j.cypher.internal.planner.v3_5.spi.TokenContext
+import org.neo4j.cypher.internal.v3_5.logical.plans.IndexOrder
 import org.neo4j.cypher.internal.v3_5.logical.plans.QualifiedName
-import org.neo4j.graphdb.{Path, PropertyContainer}
+import org.neo4j.graphdb.Path
+import org.neo4j.graphdb.PropertyContainer
+import org.neo4j.internal.kernel.api._
 import org.neo4j.internal.kernel.api.helpers.RelationshipSelectionCursor
-import org.neo4j.internal.kernel.api.{CursorFactory, IndexReference, Read, Write, _}
 import org.neo4j.kernel.api.dbms.DbmsOperations
 import org.neo4j.kernel.impl.api.store.RelationshipIterator
 import org.neo4j.kernel.impl.core.EmbeddedProxySPI
 import org.neo4j.kernel.impl.factory.DatabaseInfo
 import org.neo4j.values.AnyValue
 import org.neo4j.values.storable.Value
-import org.neo4j.values.virtual.{NodeValue, RelationshipValue}
+import org.neo4j.values.virtual.NodeValue
+import org.neo4j.values.virtual.RelationshipValue
 import org.opencypher.v9_0.expressions.SemanticDirection
+import org.opencypher.v9_0.util.EntityNotFoundException
 
 import scala.collection.Iterator
 
@@ -60,15 +67,15 @@ trait QueryContext extends TokenContext with DbAccess {
 
   def withActiveRead: QueryContext
 
-  def resources: CloseableResource
+  def resources: ResourceManager
 
   def nodeOps: Operations[NodeValue]
 
   def relationshipOps: Operations[RelationshipValue]
 
-  def createNode(): NodeValue
+  def createNode(labels: Array[Int]): NodeValue
 
-  def createNodeId(): Long
+  def createNodeId(labels: Array[Int]): Long
 
   def createRelationship(start: Long, end: Long, relType: Int): RelationshipValue
 
@@ -100,23 +107,30 @@ trait QueryContext extends TokenContext with DbAccess {
 
   def indexReference(label: Int, properties: Int*): IndexReference
 
-  def indexSeek(index: IndexReference, queries: Seq[IndexQuery]): Iterator[NodeValue]
+  def indexSeek[RESULT <: AnyRef](index: IndexReference,
+                                  needsValues: Boolean,
+                                  indexOrder: IndexOrder,
+                                  queries: Seq[IndexQuery]): NodeValueIndexCursor
 
-  def indexScanByContains(index: IndexReference, value: String): Iterator[NodeValue]
+  def indexSeekByContains[RESULT <: AnyRef](index: IndexReference,
+                                            needsValues: Boolean,
+                                            indexOrder: IndexOrder,
+                                            value: String): NodeValueIndexCursor
 
-  def indexScanByEndsWith(index: IndexReference, value: String): Iterator[NodeValue]
+  def indexSeekByEndsWith[RESULT <: AnyRef](index: IndexReference,
+                                            needsValues: Boolean,
+                                            indexOrder: IndexOrder,
+                                            value: String): NodeValueIndexCursor
 
-  def indexScan(index: IndexReference): Iterator[NodeValue]
+  def indexScan[RESULT <: AnyRef](index: IndexReference,
+                                  needsValues: Boolean,
+                                  indexOrder: IndexOrder): NodeValueIndexCursor
 
-  def indexScanPrimitive(index: IndexReference): LongIterator
-
-  def lockingUniqueIndexSeek(index: IndexReference, queries: Seq[IndexQuery.ExactPredicate]): Option[NodeValue]
+  def lockingUniqueIndexSeek[RESULT](index: IndexReference, queries: Seq[IndexQuery.ExactPredicate]): NodeValueIndexCursor
 
   def getNodesByLabel(id: Int): Iterator[NodeValue]
 
   def getNodesByLabelPrimitive(id: Int): LongIterator
-
-  def getOrCreateFromSchemaState[K, V](key: K, creator: => V): V
 
   /* return true if the constraint was created, false if preexisting, throws if failed */
   def createNodeKeyConstraint(descriptor: IndexDescriptor): Boolean
@@ -145,7 +159,7 @@ trait QueryContext extends TokenContext with DbAccess {
   /**
    * This should not be used. We'll remove sooner (or later). Don't do it.
    */
-  def withAnyOpenQueryContext[T](work: (QueryContext) => T): T
+  def withAnyOpenQueryContext[T](work: QueryContext => T): T
 
   /*
   This is an ugly hack to get multi threading to work
@@ -166,7 +180,7 @@ trait QueryContext extends TokenContext with DbAccess {
 
   def nodeIsDense(node: Long): Boolean
 
-  def asObject(value: AnyValue): Any
+  def asObject(value: AnyValue): AnyRef
 
   // Legacy dependency between kernel and compiler
   def variableLengthPathExpand(realNode: Long, minHops: Option[Int], maxHops: Option[Int], direction: SemanticDirection, relTypes: Seq[String]): Iterator[Path]
@@ -203,10 +217,6 @@ trait QueryContext extends TokenContext with DbAccess {
   def aggregateFunction(id: Int, allowed: Array[String]): UserDefinedAggregator
   def aggregateFunction(name: QualifiedName, allowed: Array[String]): UserDefinedAggregator
 
-    // Check if a runtime value is a node, relationship, path or some such value returned from
-  // other query context values by calling down to the underlying database
-  def isGraphKernelResultValue(v: Any): Boolean
-
   def detachDeleteNode(id: Long): Int
 
   def assertSchemaWritesAllowed(): Unit
@@ -216,6 +226,8 @@ trait QueryContext extends TokenContext with DbAccess {
   override def relationshipById(id: Long): RelationshipValue = relationshipOps.getById(id)
 
   override def propertyKey(name: String): Int = transactionalContext.tokenRead.propertyKey(name)
+
+  override def nodeLabel(name: String): Int = transactionalContext.tokenRead.nodeLabel(name)
 
   override def relationshipType(name: String): Int = transactionalContext.tokenRead.relationshipType(name)
 
@@ -244,6 +256,21 @@ trait Operations[T] {
 
   def hasProperty(obj: Long, propertyKeyId: Int): Boolean
 
+  /**
+    * @return `None` if there are no changes.
+    *         `Some(NO_VALUE)` if the property was deleted.
+    *         `Some(v)` if the property was set to v
+    * @throws EntityNotFoundException if the node was deleted
+    */
+  def getTxStateProperty(obj: Long, propertyKeyId: Int): Option[Value]
+
+  /**
+    * @return `true` if TxState has no changes, which indicates the cached node property must exist,
+    *        or if the property was changed.
+    *        `false` if the property or the node were deleted in TxState.
+    */
+  def hasTxStatePropertyForCachedNodeProperty(nodeId: Long, propertyKeyId: Int): Boolean
+
   def propertyKeyIds(obj: Long): Array[Int]
 
   def getById(id: Long): T
@@ -268,10 +295,6 @@ trait QueryTransactionalContext extends CloseableResource {
   def cursors : CursorFactory
 
   def dataRead: Read
-
-  def stableDataRead: Read
-
-  def markAsStable(): Unit
 
   def tokenRead: TokenRead
 
@@ -312,3 +335,33 @@ trait CloseableResource {
   def close(success: Boolean)
 }
 
+object NodeValueHit {
+  val EMPTY = new NodeValueHit(-1L, null)
+}
+
+class NodeValueHit(val nodeId: Long, val values: Array[Value]) extends NodeValueIndexCursor {
+
+  private var _next = nodeId != -1L
+
+  override def numberOfProperties(): Int = values.length
+
+  override def propertyKey(offset: Int): Int = throw new UnsupportedOperationException("not implemented")
+
+  override def hasValue: Boolean = true
+
+  override def propertyValue(offset: Int): Value = values(offset)
+
+  override def node(cursor: NodeCursor): Unit = throw new UnsupportedOperationException("not implemented")
+
+  override def nodeReference(): Long = nodeId
+
+  override def next(): Boolean = {
+    val temp = _next
+    _next = false
+    temp
+  }
+
+  override def close(): Unit = _next = false
+
+  override def isClosed: Boolean = _next
+}

@@ -107,7 +107,7 @@ public class IndexDescriptor implements SchemaDescriptorSupplier, IndexReference
     @Override
     public String name()
     {
-        return userSuppliedName.orElse( "Unnamed index" );
+        return userSuppliedName.orElse( UNNAMED_INDEX );
     }
 
     public IndexProviderDescriptor providerDescriptor()
@@ -127,12 +127,25 @@ public class IndexDescriptor implements SchemaDescriptorSupplier, IndexReference
         return IndexValueCapability.NO;
     }
 
+    @Override
+    public boolean isFulltextIndex()
+    {
+        return false;
+    }
+
+    @Override
+    public boolean isEventuallyConsistent()
+    {
+        return false;
+    }
+
     /**
      * Returns a user friendly description of what this index indexes.
      *
      * @param tokenNameLookup used for looking up names for token ids.
      * @return a user friendly description of what this index indexes.
      */
+    @Override
     public String userDescription( TokenNameLookup tokenNameLookup )
     {
         return format( "Index( %s, %s )", type.name(), schema.userDescription( tokenNameLookup ) );

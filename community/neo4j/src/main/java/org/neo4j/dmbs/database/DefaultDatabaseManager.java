@@ -24,8 +24,8 @@ import java.util.Optional;
 import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.facade.spi.ClassicCoreSPI;
 import org.neo4j.graphdb.factory.module.DataSourceModule;
-import org.neo4j.graphdb.factory.module.EditionModule;
 import org.neo4j.graphdb.factory.module.PlatformModule;
+import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule;
 import org.neo4j.kernel.impl.factory.GraphDatabaseFacade;
 import org.neo4j.kernel.impl.proc.Procedures;
 import org.neo4j.kernel.lifecycle.LifecycleAdapter;
@@ -37,18 +37,18 @@ public final class DefaultDatabaseManager extends LifecycleAdapter implements Da
 {
     private GraphDatabaseFacade database;
     private final PlatformModule platform;
-    private final EditionModule edition;
+    private final AbstractEditionModule edition;
     private final Procedures procedures;
-    private final Logger msgLog;
+    private final Logger log;
     private final GraphDatabaseFacade graphDatabaseFacade;
 
-    public DefaultDatabaseManager( PlatformModule platform, EditionModule edition, Procedures procedures,
-            Logger msgLog, GraphDatabaseFacade graphDatabaseFacade )
+    public DefaultDatabaseManager( PlatformModule platform, AbstractEditionModule edition, Procedures procedures,
+            Logger log, GraphDatabaseFacade graphDatabaseFacade )
     {
         this.platform = platform;
         this.edition = edition;
         this.procedures = procedures;
-        this.msgLog = msgLog;
+        this.log = log;
         this.graphDatabaseFacade = graphDatabaseFacade;
     }
 
@@ -59,13 +59,13 @@ public final class DefaultDatabaseManager extends LifecycleAdapter implements Da
     }
 
     @Override
-    public GraphDatabaseFacade createDatabase( String name )
+    public GraphDatabaseFacade createDatabase( String databaseName )
     {
         checkState( database == null, "Database is already created, fail to create another one." );
-
-        DataSourceModule dataSource = new DataSourceModule( name, platform, edition, procedures, graphDatabaseFacade );
-        ClassicCoreSPI spi = new ClassicCoreSPI( platform, dataSource, msgLog, edition.coreAPIAvailabilityGuard );
-        graphDatabaseFacade.init( spi, platform.threadToTransactionBridge, platform.config, dataSource.tokenHolders );
+        log.log( "Creating '%s' database.", databaseName );
+        DataSourceModule dataSource = new DataSourceModule( databaseName, platform, edition, procedures, graphDatabaseFacade );
+        ClassicCoreSPI spi = new ClassicCoreSPI( platform, dataSource, log, dataSource.getCoreAPIAvailabilityGuard(), edition.getThreadToTransactionBridge() );
+        graphDatabaseFacade.init( spi, edition.getThreadToTransactionBridge(), platform.config, dataSource.neoStoreDataSource.getTokenHolders() );
         platform.dataSourceManager.register( dataSource.neoStoreDataSource );
         database = graphDatabaseFacade;
         return database;
@@ -87,6 +87,7 @@ public final class DefaultDatabaseManager extends LifecycleAdapter implements Da
     {
         if ( database != null )
         {
+            log.log( "Shutting down '%s' database.", database.databaseLayout().getDatabaseName() );
             database.shutdown();
         }
     }

@@ -19,7 +19,6 @@
  */
 package org.neo4j.cypher.internal
 
-import org.neo4j.cypher.CypherExecutionMode
 import org.neo4j.graphdb.Result
 import org.neo4j.kernel.api.query.CompilerInfo
 import org.neo4j.kernel.impl.query.TransactionalContext
@@ -34,11 +33,11 @@ trait ExecutableQuery {
     * Execute this executable query.
     *
     * @param transactionalContext the transaction in which to execute
-    * @param executionMode the execution mode
+    * @param preParsedQuery the preparsed query to execute
     * @param params the parameters
     * @return the query result
     */
-  def execute(transactionalContext: TransactionalContext, executionMode: CypherExecutionMode, params: MapValue): Result
+  def execute(transactionalContext: TransactionalContext, preParsedQuery: PreParsedQuery, params: MapValue): Result
 
   /**
     * The reusability state of this executable query.

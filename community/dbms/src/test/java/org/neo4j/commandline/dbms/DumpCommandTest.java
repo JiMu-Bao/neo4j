@@ -28,6 +28,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.FileAlreadyExistsException;
@@ -42,13 +43,14 @@ import org.neo4j.commandline.admin.CommandLocator;
 import org.neo4j.commandline.admin.IncorrectUsage;
 import org.neo4j.commandline.admin.Usage;
 import org.neo4j.dbms.archive.Dumper;
-import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.config.Setting;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
+import org.neo4j.io.layout.StoreLayout;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.store.MetaDataStore;
-import org.neo4j.kernel.impl.storemigration.StoreFileType;
+import org.neo4j.kernel.impl.transaction.log.files.TransactionLogFiles;
 import org.neo4j.kernel.internal.locker.StoreLocker;
 import org.neo4j.test.extension.Inject;
 import org.neo4j.test.extension.TestDirectoryExtension;
@@ -61,6 +63,7 @@ import static java.util.Collections.singletonList;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -182,15 +185,27 @@ class DumpCommandTest
     void shouldRespectTheStoreLock() throws Exception
     {
         Path databaseDirectory = homeDir.resolve( "data/databases/foo.db" );
-
+        StoreLayout storeLayout = DatabaseLayout.of( databaseDirectory.toFile() ).getStoreLayout();
         try ( FileSystemAbstraction fileSystem = new DefaultFileSystemAbstraction();
-              StoreLocker storeLocker = new StoreLocker( fileSystem, databaseDirectory.toFile() ) )
+              StoreLocker storeLocker = new StoreLocker( fileSystem, storeLayout ) )
         {
             storeLocker.checkLock();
 
             CommandFailed commandFailed = assertThrows( CommandFailed.class, () -> execute( "foo.db" ) );
             assertEquals( "the database is in use -- stop Neo4j and try again", commandFailed.getMessage() );
         }
+    }
+
+    @Test
+    void databaseThatRequireRecoveryIsNotDumpable() throws IOException
+    {
+        File logFile = new File( databaseDirectory.toFile(), TransactionLogFiles.DEFAULT_NAME + ".0" );
+        try ( FileWriter fileWriter = new FileWriter( logFile ) )
+        {
+            fileWriter.write( "brb" );
+        }
+        CommandFailed commandFailed = assertThrows( CommandFailed.class, () -> execute( "foo.db" ) );
+        assertThat( commandFailed.getMessage(), startsWith( "Active logical log detected, this might be a source of inconsistencies." ) );
     }
 
     @Test
@@ -227,13 +242,13 @@ class DumpCommandTest
     @DisabledOnOs( OS.WINDOWS )
     void shouldReportAHelpfulErrorIfWeDontHaveWritePermissionsForLock() throws Exception
     {
+        StoreLayout storeLayout = DatabaseLayout.of( databaseDirectory.toFile() ).getStoreLayout();
         try ( FileSystemAbstraction fileSystem = new DefaultFileSystemAbstraction();
-              StoreLocker storeLocker = new StoreLocker( fileSystem, databaseDirectory.toFile() ) )
+              StoreLocker storeLocker = new StoreLocker( fileSystem, storeLayout ) )
         {
             storeLocker.checkLock();
 
-            try ( Closeable ignored = withPermissions( databaseDirectory.resolve( StoreLocker.STORE_LOCK_FILENAME ),
-                    emptySet() ) )
+            try ( Closeable ignored = withPermissions( storeLayout.storeLockFile().toPath(), emptySet() ) )
             {
                 CommandFailed commandFailed = assertThrows( CommandFailed.class, () -> execute( "foo.db" ) );
                 assertEquals( commandFailed.getMessage(), "you do not have permission to dump the database -- is Neo4j running as a different user?" );
@@ -245,10 +260,11 @@ class DumpCommandTest
     void shouldExcludeTheStoreLockFromTheArchiveToAvoidProblemsWithReadingLockedFilesOnWindows()
             throws Exception
     {
+        File lockFile = StoreLayout.of( new File( "." ) ).storeLockFile();
         doAnswer( invocation ->
         {
             Predicate<Path> exclude = invocation.getArgument( 3 );
-            assertThat( exclude.test( Paths.get( StoreLocker.STORE_LOCK_FILENAME ) ), is( true ) );
+            assertThat( exclude.test( Paths.get( lockFile.getName() ) ), is( true ) );
             assertThat( exclude.test( Paths.get( "some-other-file" ) ), is( false ) );
             return null;
         } ).when( dumper ).dump(any(), any(), any(), any() );
@@ -260,7 +276,7 @@ class DumpCommandTest
     void shouldDefaultToGraphDB() throws Exception
     {
         Path dataDir = testDirectory.directory( "some-other-path" ).toPath();
-        Path databaseDir = dataDir.resolve( "databases/" + DatabaseManager.DEFAULT_DATABASE_NAME );
+        Path databaseDir = dataDir.resolve( "databases/" + GraphDatabaseSettings.DEFAULT_DATABASE_NAME );
         putStoreInDirectory( databaseDir );
         Files.write( configDir.resolve( Config.DEFAULT_CONFIG_FILE_NAME ), singletonList( formatProperty( data_directory, dataDir ) ) );
 
@@ -334,7 +350,7 @@ class DumpCommandTest
                             "that is mounted in a running Neo4j server.%n" +
                             "%n" +
                             "options:%n" +
-                            "  --database=<name>         Name of database. [default:" + DatabaseManager.DEFAULT_DATABASE_NAME + "]%n" +
+                            "  --database=<name>         Name of database. [default:" + GraphDatabaseSettings.DEFAULT_DATABASE_NAME + "]%n" +
                             "  --to=<destination-path>   Destination (file or folder) of database dump.%n" ),
                     baos.toString() );
         }
@@ -349,16 +365,16 @@ class DumpCommandTest
     private static void assertCanLockStore( Path databaseDirectory ) throws IOException
     {
         try ( FileSystemAbstraction fileSystem = new DefaultFileSystemAbstraction();
-              StoreLocker storeLocker = new StoreLocker( fileSystem, databaseDirectory.toFile() ) )
+              StoreLocker storeLocker = new StoreLocker( fileSystem, DatabaseLayout.of( databaseDirectory.toFile() ).getStoreLayout() ) )
         {
             storeLocker.checkLock();
         }
     }
 
-    private static void putStoreInDirectory( Path storeDir ) throws IOException
+    private static void putStoreInDirectory( Path databaseDirectory ) throws IOException
     {
-        Files.createDirectories( storeDir );
-        Path storeFile = storeDir.resolve( StoreFileType.STORE.augment( MetaDataStore.DEFAULT_NAME ) );
+        Files.createDirectories( databaseDirectory );
+        Path storeFile = DatabaseLayout.of( databaseDirectory.toFile() ).metadataStore().toPath();
         Files.createFile( storeFile );
     }
 

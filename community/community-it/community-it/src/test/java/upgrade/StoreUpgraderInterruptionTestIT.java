@@ -19,6 +19,7 @@
  */
 package upgrade;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -36,11 +37,10 @@ import org.neo4j.consistency.checking.full.ConsistencyCheckIncompleteException;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.api.index.IndexProvider;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.logging.LogService;
-import org.neo4j.kernel.impl.logging.NullLogService;
 import org.neo4j.kernel.impl.store.format.standard.Standard;
 import org.neo4j.kernel.impl.store.format.standard.StandardV2_3;
 import org.neo4j.kernel.impl.storemigration.MigrationTestUtils;
@@ -59,6 +59,10 @@ import org.neo4j.kernel.impl.util.monitoring.ProgressReporter;
 import org.neo4j.kernel.monitoring.Monitors;
 import org.neo4j.kernel.recovery.LogTailScanner;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.logging.internal.LogService;
+import org.neo4j.logging.internal.NullLogService;
+import org.neo4j.scheduler.JobScheduler;
+import org.neo4j.scheduler.ThreadPoolJobScheduler;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.rule.PageCacheRule;
 import org.neo4j.test.rule.TestDirectory;
@@ -84,7 +88,6 @@ public class StoreUpgraderInterruptionTestIT
     @Parameterized.Parameter
     public String version;
     private static final Config CONFIG = Config.defaults( GraphDatabaseSettings.pagecache_memory, "8m" );
-    private File workingDirectory;
 
     @Parameters( name = "{0}" )
     public static Collection<String> versions()
@@ -95,35 +98,43 @@ public class StoreUpgraderInterruptionTestIT
     }
 
     private final FileSystemAbstraction fs = fileSystemRule.get();
-    private File workingDatabaseDirectory;
+    private JobScheduler jobScheduler;
+    private DatabaseLayout workingDatabaseLayout;
     private File prepareDirectory;
 
     @Before
     public void setUpLabelScanStore()
     {
-        workingDirectory = directory.storeDir( "working" );
-        workingDatabaseDirectory = directory.databaseDir( workingDirectory );
+        jobScheduler = new ThreadPoolJobScheduler();
+        workingDatabaseLayout = directory.databaseLayout();
         prepareDirectory = directory.directory( "prepare" );
+
+    }
+
+    @After
+    public void tearDown() throws Exception
+    {
+        jobScheduler.close();
     }
 
     @Test
     public void shouldSucceedWithUpgradeAfterPreviousAttemptDiedDuringMigration()
             throws IOException, ConsistencyCheckIncompleteException
     {
-        MigrationTestUtils.prepareSampleLegacyDatabase( version, fs, workingDatabaseDirectory, prepareDirectory );
+        MigrationTestUtils.prepareSampleLegacyDatabase( version, fs, workingDatabaseLayout.databaseDirectory(), prepareDirectory );
         PageCache pageCache = pageCacheRule.getPageCache( fs );
         StoreVersionCheck check = new StoreVersionCheck( pageCache );
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( check );
         SilentMigrationProgressMonitor progressMonitor = new SilentMigrationProgressMonitor();
         LogService logService = NullLogService.getInstance();
-        StoreMigrator failingStoreMigrator = new StoreMigrator( fs, pageCache, CONFIG, logService )
+        StoreMigrator failingStoreMigrator = new StoreMigrator( fs, pageCache, CONFIG, logService, jobScheduler )
         {
             @Override
-            public void migrate( File sourceStoreDir, File targetStoreDir,
+            public void migrate( DatabaseLayout directoryLayout, DatabaseLayout migrationLayout,
                     ProgressReporter progressReporter,
                     String versionToMigrateFrom, String versionToMigrateTo ) throws IOException
             {
-                super.migrate( sourceStoreDir, targetStoreDir, progressReporter, versionToMigrateFrom,
+                super.migrate( directoryLayout, migrationLayout, progressReporter, versionToMigrateFrom,
                         versionToMigrateTo );
                 throw new RuntimeException( "This upgrade is failing" );
             }
@@ -132,7 +143,7 @@ public class StoreUpgraderInterruptionTestIT
         try
         {
             newUpgrader( upgradableDatabase, pageCache, progressMonitor, createIndexMigrator(), failingStoreMigrator )
-                    .migrateIfNeeded( workingDatabaseDirectory );
+                    .migrateIfNeeded( workingDatabaseLayout );
             fail( "Should throw exception" );
         }
         catch ( RuntimeException e )
@@ -141,21 +152,21 @@ public class StoreUpgraderInterruptionTestIT
         }
 
         progressMonitor = new SilentMigrationProgressMonitor();
-        StoreMigrator migrator = new StoreMigrator( fs, pageCache, CONFIG, logService );
+        StoreMigrator migrator = new StoreMigrator( fs, pageCache, CONFIG, logService, jobScheduler );
         SchemaIndexMigrator indexMigrator = createIndexMigrator();
-        newUpgrader( upgradableDatabase, pageCache, progressMonitor, indexMigrator, migrator ).migrateIfNeeded( workingDatabaseDirectory );
+        newUpgrader( upgradableDatabase, pageCache, progressMonitor, indexMigrator, migrator ).migrateIfNeeded( workingDatabaseLayout );
 
-        assertTrue( checkNeoStoreHasDefaultFormatVersion( check, workingDatabaseDirectory ) );
+        assertTrue( checkNeoStoreHasDefaultFormatVersion( check, workingDatabaseLayout ) );
 
         // Since consistency checker is in read only mode we need to start/stop db to generate label scan store.
-        startStopDatabase( workingDirectory );
-        assertConsistentStore( workingDatabaseDirectory );
+        startStopDatabase( workingDatabaseLayout.databaseDirectory() );
+        assertConsistentStore( workingDatabaseLayout );
     }
 
     private UpgradableDatabase getUpgradableDatabase( StoreVersionCheck check ) throws IOException
     {
         VersionAwareLogEntryReader<ReadableClosablePositionAwareChannel> logEntryReader = new VersionAwareLogEntryReader<>();
-        LogFiles logFiles = LogFilesBuilder.logFilesBasedOnlyBuilder( workingDatabaseDirectory, fs ).build();
+        LogFiles logFiles = LogFilesBuilder.logFilesBasedOnlyBuilder( workingDatabaseLayout.databaseDirectory(), fs ).build();
         LogTailScanner tailScanner = new LogTailScanner( logFiles, logEntryReader, new Monitors() );
         return new UpgradableDatabase( check, Standard.LATEST_RECORD_FORMATS, tailScanner );
     }
@@ -169,19 +180,19 @@ public class StoreUpgraderInterruptionTestIT
     public void shouldSucceedWithUpgradeAfterPreviousAttemptDiedDuringMovingFiles()
             throws IOException, ConsistencyCheckIncompleteException
     {
-        MigrationTestUtils.prepareSampleLegacyDatabase( version, fs, workingDatabaseDirectory, prepareDirectory );
+        MigrationTestUtils.prepareSampleLegacyDatabase( version, fs, workingDatabaseLayout.databaseDirectory(), prepareDirectory );
         PageCache pageCache = pageCacheRule.getPageCache( fs );
         StoreVersionCheck check = new StoreVersionCheck( pageCache );
         UpgradableDatabase upgradableDatabase = getUpgradableDatabase( check );
         SilentMigrationProgressMonitor progressMonitor = new SilentMigrationProgressMonitor();
         LogService logService = NullLogService.getInstance();
-        StoreMigrator failingStoreMigrator = new StoreMigrator( fs, pageCache, CONFIG, logService )
+        StoreMigrator failingStoreMigrator = new StoreMigrator( fs, pageCache, CONFIG, logService, jobScheduler )
         {
             @Override
-            public void moveMigratedFiles( File migrationDir, File storeDir, String versionToUpgradeFrom,
+            public void moveMigratedFiles( DatabaseLayout migrationLayout, DatabaseLayout directoryLayout, String versionToUpgradeFrom,
                     String versionToMigrateTo ) throws IOException
             {
-                super.moveMigratedFiles( migrationDir, storeDir, versionToUpgradeFrom, versionToMigrateTo );
+                super.moveMigratedFiles( migrationLayout, directoryLayout, versionToUpgradeFrom, versionToMigrateTo );
                 throw new RuntimeException( "This upgrade is failing" );
             }
         };
@@ -189,7 +200,7 @@ public class StoreUpgraderInterruptionTestIT
         try
         {
             newUpgrader( upgradableDatabase, pageCache, progressMonitor, createIndexMigrator(), failingStoreMigrator )
-                    .migrateIfNeeded( workingDatabaseDirectory );
+                    .migrateIfNeeded( workingDatabaseLayout );
             fail( "Should throw exception" );
         }
         catch ( RuntimeException e )
@@ -197,20 +208,20 @@ public class StoreUpgraderInterruptionTestIT
             assertEquals( "This upgrade is failing", e.getMessage() );
         }
 
-        assertTrue( checkNeoStoreHasDefaultFormatVersion( check, workingDatabaseDirectory ) );
+        assertTrue( checkNeoStoreHasDefaultFormatVersion( check, workingDatabaseLayout ) );
 
         progressMonitor = new SilentMigrationProgressMonitor();
-        StoreMigrator migrator = new StoreMigrator( fs, pageCache, CONFIG, logService );
+        StoreMigrator migrator = new StoreMigrator( fs, pageCache, CONFIG, logService, jobScheduler );
         newUpgrader( upgradableDatabase, pageCache, progressMonitor, createIndexMigrator(), migrator )
-                .migrateIfNeeded( workingDatabaseDirectory );
+                .migrateIfNeeded( workingDatabaseLayout );
 
-        assertTrue( checkNeoStoreHasDefaultFormatVersion( check, workingDatabaseDirectory ) );
+        assertTrue( checkNeoStoreHasDefaultFormatVersion( check, workingDatabaseLayout ) );
 
         pageCache.close();
 
         // Since consistency checker is in read only mode we need to start/stop db to generate label scan store.
-        startStopDatabase( workingDirectory );
-        assertConsistentStore( workingDatabaseDirectory );
+        startStopDatabase( workingDatabaseLayout.databaseDirectory() );
+        assertConsistentStore( workingDatabaseLayout );
     }
 
     private StoreUpgrader newUpgrader( UpgradableDatabase upgradableDatabase, PageCache pageCache,

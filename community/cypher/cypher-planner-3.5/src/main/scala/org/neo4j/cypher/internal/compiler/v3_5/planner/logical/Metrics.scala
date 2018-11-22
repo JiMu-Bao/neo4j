@@ -21,14 +21,15 @@ package org.neo4j.cypher.internal.compiler.v3_5.planner.logical
 
 import org.neo4j.cypher.internal.compiler.v3_5.CypherPlannerConfiguration
 import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.Metrics.{CardinalityModel, CostModel, QueryGraphCardinalityModel}
-import org.opencypher.v9_0.ast.semantics.SemanticTable
+import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.cardinality.ExpressionSelectivityCalculator
 import org.neo4j.cypher.internal.ir.v3_5.{PlannerQuery, _}
 import org.neo4j.cypher.internal.planner.v3_5.spi.GraphStatistics
 import org.neo4j.cypher.internal.planner.v3_5.spi.PlanningAttributes.{Cardinalities, Solveds}
-import org.opencypher.v9_0.util.{Cardinality, Cost}
-import org.neo4j.cypher.internal.v3_5.logical.plans.LogicalPlan
+import org.neo4j.cypher.internal.v3_5.logical.plans.{LogicalPlan, ResolvedFunctionInvocation}
+import org.opencypher.v9_0.ast.semantics.SemanticTable
+import org.opencypher.v9_0.expressions.functions.Rand
 import org.opencypher.v9_0.expressions.{Expression, FunctionInvocation, LabelName, Parameter}
-import org.opencypher.v9_0.expressions.functions.{Rand, Timestamp}
+import org.opencypher.v9_0.util.{Cardinality, Cost}
 
 import scala.language.implicitConversions
 
@@ -60,9 +61,14 @@ object Metrics {
 
   // This metric estimates how many rows of data a logical plan produces
   // (e.g. by asking the database for statistics)
-  type CardinalityModel = (PlannerQuery, QueryGraphSolverInput, SemanticTable) => Cardinality
+  trait CardinalityModel {
+    def apply(query: PlannerQuery, input: QueryGraphSolverInput, semanticTable: SemanticTable): Cardinality
+  }
 
-  type QueryGraphCardinalityModel = (QueryGraph, QueryGraphSolverInput, SemanticTable) => Cardinality
+  trait QueryGraphCardinalityModel {
+    def apply(queryGraph: QueryGraph, input: QueryGraphSolverInput, semanticTable: SemanticTable): Cardinality
+    def expressionSelectivityCalculator: ExpressionSelectivityCalculator
+  }
 
   type LabelInfo = Map[String, Set[LabelName]]
 }
@@ -74,11 +80,11 @@ trait ExpressionEvaluator {
     case _ => false
   }
 
-  def isNonDeterministic(expr: Expression): Boolean =
-    expr.inputs.exists {
-      case (func@FunctionInvocation(_, _, _, _), _) if func.function == Rand => true
-      case (func@FunctionInvocation(_, _, _, _), _) if func.function == Timestamp => true
-      case _ => false
+  def isDeterministic(expr: Expression): Boolean = expr.inputs.forall {
+      case (func@FunctionInvocation(_, _, _, _), _) if func.function == Rand => false
+      //for UDFs we don't know but the result might be non-deterministic
+      case (_:ResolvedFunctionInvocation, _) => false
+      case _ => true
     }
 
   def evaluateExpression(expr: Expression): Option[Any]

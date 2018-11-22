@@ -59,6 +59,7 @@ import org.neo4j.values.storable.DateTimeValue;
 import org.neo4j.values.storable.DateValue;
 import org.neo4j.values.storable.LocalDateTimeValue;
 import org.neo4j.values.storable.LocalTimeValue;
+import org.neo4j.values.storable.NoValue;
 import org.neo4j.values.storable.TimeValue;
 import org.neo4j.values.storable.Value;
 import org.neo4j.values.storable.Values;
@@ -109,6 +110,8 @@ class AppendOnlyValuesContainerTest
     Stream<DynamicTest> addGet()
     {
         final List<Pair<String, Value[]>> inputs = asList(
+                testInput( "NoValue", Function.identity(), NoValue.NO_VALUE ),
+
                 testInput( "Boolean", Values::booleanValue, true, false, true, false ),
                 testInput( "BooleanArray", Values::booleanArray, new boolean[] {false, true, false}, EMPTY_BOOLEAN_ARRAY ),
 
@@ -183,13 +186,21 @@ class AppendOnlyValuesContainerTest
                 testInput( "DateTime", DateTimeValue::datetime,
                         ZonedDateTime.now(),
                         ZonedDateTime.parse( "1956-10-04T19:28:34.123+01:00[Europe/Paris]" ),
-                        ZonedDateTime.parse( "1956-10-04T19:28:34.123+01:15" )
+                        ZonedDateTime.parse( "1956-10-04T19:28:34.123+01:15" ),
+                        ZonedDateTime.parse( "2018-09-13T16:12:16.12345+14:00[Pacific/Kiritimati]" ),
+                        ZonedDateTime.parse( "2018-09-13T16:12:16.12345-12:00[Etc/GMT+12]" ),
+                        ZonedDateTime.parse( "2018-09-13T16:12:16.12345-18:00" ),
+                        ZonedDateTime.parse( "2018-09-13T16:12:16.12345+18:00" )
                 ),
                 testInput( "DateTimeArray", Values::dateTimeArray,
                         new ZonedDateTime[] {
-                                ZonedDateTime.now(),
+                                ZonedDateTime.parse( "1956-10-04T19:28:34.123+01:00[Europe/Paris]" ),
                                 ZonedDateTime.parse( "1956-10-04T19:28:34.123+01:15" ),
-                                ZonedDateTime.parse( "1956-10-04T19:28:34.123+01:00[Europe/Paris]" )},
+                                ZonedDateTime.parse( "2018-09-13T16:12:16.12345+14:00[Pacific/Kiritimati]" ),
+                                ZonedDateTime.parse( "2018-09-13T16:12:16.12345-12:00[Etc/GMT+12]" ),
+                                ZonedDateTime.parse( "2018-09-13T16:12:16.12345-18:00" ),
+                                ZonedDateTime.parse( "2018-09-13T16:12:16.12345+18:00" )
+                        },
                         new ZonedDateTime[0] )
 
         );
@@ -228,22 +239,6 @@ class AppendOnlyValuesContainerTest
     }
 
     @Test
-    void clear()
-    {
-        final Value value1 = stringValue( "foo" );
-        final Value value2 = stringValue( "bar" );
-        final long ref1 = container.add( value1 );
-        final long ref2 = container.add( value2 );
-        assertEquals( value1, container.get( ref1 ) );
-        assertEquals( value2, container.get( ref2 ) );
-
-        container.clear();
-
-        assertThrows( IllegalArgumentException.class, () -> container.get( ref1 ) );
-        assertThrows( IllegalArgumentException.class, () -> container.get( ref2 ) );
-    }
-
-    @Test
     void valueSizeExceedsChunkSize()
     {
         final AppendOnlyValuesContainer container2 = new AppendOnlyValuesContainer( 4, new TestMemoryAllocator() );
@@ -265,7 +260,6 @@ class AppendOnlyValuesContainerTest
         assertThrows( IllegalStateException.class, () -> container2.add( intValue( 1 ) ) );
         assertThrows( IllegalStateException.class, () -> container2.get( ref ) );
         assertThrows( IllegalStateException.class, () -> container2.remove( ref ) );
-        assertThrows( IllegalStateException.class, container2::clear );
         assertThrows( IllegalStateException.class, container2::close );
     }
 

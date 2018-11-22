@@ -30,12 +30,14 @@ import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.extension.DatabaseKernelExtensions;
 import org.neo4j.kernel.extension.KernelExtensionFactory;
 import org.neo4j.kernel.extension.UnsatisfiedDependencyStrategies;
+import org.neo4j.kernel.impl.core.TokenHolders;
 import org.neo4j.kernel.impl.factory.DatabaseInfo;
-import org.neo4j.kernel.impl.logging.LogService;
 import org.neo4j.kernel.impl.spi.KernelContext;
 import org.neo4j.kernel.impl.spi.SimpleKernelContext;
 import org.neo4j.kernel.impl.util.Dependencies;
 import org.neo4j.kernel.monitoring.Monitors;
+import org.neo4j.logging.internal.LogService;
+import org.neo4j.scheduler.JobScheduler;
 
 /**
  * Utility for loading {@link IndexProvider} instances from {@link DatabaseKernelExtensions}.
@@ -44,15 +46,15 @@ public class SchemaIndexExtensionLoader
 {
 
     @SuppressWarnings( "unchecked" )
-    public static DatabaseKernelExtensions instantiateKernelExtensions( File storeDir, FileSystemAbstraction fileSystem,
-            Config config, LogService logService, PageCache pageCache,
-            RecoveryCleanupWorkCollector recoveryCollector, DatabaseInfo databaseInfo, Monitors monitors )
+    public static DatabaseKernelExtensions instantiateKernelExtensions(
+            File databaseDirectory, FileSystemAbstraction fileSystem, Config config, LogService logService, PageCache pageCache, JobScheduler jobScheduler,
+            RecoveryCleanupWorkCollector recoveryCollector, DatabaseInfo databaseInfo, Monitors monitors, TokenHolders tokenHolders )
     {
         Dependencies deps = new Dependencies();
-        deps.satisfyDependencies( fileSystem, config, logService, pageCache, recoveryCollector, monitors );
+        deps.satisfyDependencies( fileSystem, config, logService, pageCache, recoveryCollector, monitors, jobScheduler, tokenHolders );
         @SuppressWarnings( "rawtypes" )
         Iterable kernelExtensions = Service.load( KernelExtensionFactory.class );
-        KernelContext kernelContext = new SimpleKernelContext( storeDir, databaseInfo, deps );
+        KernelContext kernelContext = new SimpleKernelContext( databaseDirectory, databaseInfo, deps );
         return new DatabaseKernelExtensions( kernelContext, kernelExtensions, deps, UnsatisfiedDependencyStrategies.ignore() );
     }
 }

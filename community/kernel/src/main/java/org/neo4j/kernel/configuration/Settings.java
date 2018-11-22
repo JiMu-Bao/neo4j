@@ -19,6 +19,7 @@
  */
 package org.neo4j.kernel.configuration;
 
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import java.io.File;
@@ -774,17 +775,17 @@ public class Settings
         }
     };
 
-    public static <T extends Enum<T>> Function<String, T> options( final Class<T> enumClass )
+    public static <T extends Enum<T>> Function<String, T> optionsObeyCase( final Class<T> enumClass )
     {
         return options( EnumSet.allOf( enumClass ), false );
     }
 
-    public static <T extends Enum<T>> Function<String, T> options( final Class<T> enumClass, boolean ignoreCase )
+    public static <T extends Enum<T>> Function<String, T> optionsIgnoreCase( final Class<T> enumClass )
     {
-        return options( EnumSet.allOf( enumClass ), ignoreCase );
+        return options( EnumSet.allOf( enumClass ), true );
     }
 
-    public static <T> Function<String, T> options( T... optionValues )
+    public static <T> Function<String, T> optionsObeyCase( T... optionValues )
     {
         return options( Iterables.iterable( optionValues ), false );
     }
@@ -942,6 +943,21 @@ public class Settings
             {
                 return format( MATCHES_PATTERN_MESSAGE, regex );
             }
+        };
+    }
+
+    public static BiFunction<String,Function<String,String>,String> except( String... forbiddenValues )
+    {
+        return ( value, stringStringFunction ) ->
+        {
+            if ( StringUtils.isNotBlank( value ) )
+            {
+                if ( ArrayUtils.contains( forbiddenValues, value ) )
+                {
+                    throw new IllegalArgumentException( format( "not allowed value is: %s", value ) );
+                }
+            }
+            return value;
         };
     }
 

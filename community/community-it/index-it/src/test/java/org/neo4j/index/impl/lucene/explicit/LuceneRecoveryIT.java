@@ -32,21 +32,22 @@ import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.index.Index;
 import org.neo4j.graphdb.index.IndexHits;
 import org.neo4j.helpers.Exceptions;
-import org.neo4j.io.proc.ProcessUtil;
 import org.neo4j.test.TestGraphDatabaseFactory;
+import org.neo4j.test.proc.ProcessUtil;
 import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.test.rule.VerboseTimeout;
 
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.neo4j.test.proc.ProcessUtil.getJavaExecutable;
 
 public class LuceneRecoveryIT
 {
     @Rule
     public final TestDirectory testDirectory = TestDirectory.testDirectory();
     @Rule
-    public final VerboseTimeout timeout = VerboseTimeout.builder().withTimeout( 3, MINUTES ).build();
+    public final VerboseTimeout timeout = VerboseTimeout.builder().withTimeout( 30, MINUTES ).build();
 
     @Test
     public void testHardCoreRecovery() throws Exception
@@ -54,7 +55,7 @@ public class LuceneRecoveryIT
         String path = testDirectory.storeDir().getPath();
 
         Process process = Runtime.getRuntime().exec( new String[]{
-                ProcessUtil.getJavaExecutable().toString(), "-cp", ProcessUtil.getClassPath(),
+                getJavaExecutable().toString(), "-cp", ProcessUtil.getClassPath(),
                 Inserter.class.getName(), path
         } );
 
@@ -131,7 +132,7 @@ public class LuceneRecoveryIT
         }
     }
 
-    private boolean exceptionContainsStackTraceElementFromPackage( Throwable e, String packageName )
+    private static boolean exceptionContainsStackTraceElementFromPackage( Throwable e, String packageName )
     {
         for ( StackTraceElement element : e.getStackTrace() )
         {
@@ -143,7 +144,7 @@ public class LuceneRecoveryIT
         return false;
     }
 
-    private void awaitFile( File file ) throws InterruptedException
+    private static void awaitFile( File file ) throws InterruptedException
     {
         long end = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis( 300 );
         while ( !file.exists() && System.currentTimeMillis() < end )

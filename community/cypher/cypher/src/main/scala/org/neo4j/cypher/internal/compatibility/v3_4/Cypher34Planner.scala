@@ -46,14 +46,14 @@ import org.neo4j.cypher.internal.spi.v3_4.{ExceptionTranslatingPlanContext => Ex
 import org.neo4j.cypher.internal.util.{v3_4 => utilV3_4}
 import org.neo4j.cypher.internal.v3_4.expressions.{Expression, Parameter}
 import org.neo4j.cypher.{CypherPlannerOption, CypherUpdateStrategy, CypherVersion}
-import org.neo4j.graphdb.Notification
 import org.neo4j.helpers.collection.Pair
+import org.neo4j.kernel.impl.api.SchemaStateKey
 import org.neo4j.kernel.impl.query.TransactionalContext
 import org.neo4j.kernel.monitoring.{Monitors => KernelMonitors}
 import org.neo4j.logging.Log
 import org.neo4j.values.virtual.MapValue
 import org.opencypher.v9_0.frontend.PlannerName
-import org.opencypher.v9_0.frontend.phases.{CompilationPhaseTracer, RecordingNotificationLogger => RecordingNotificationLoggerv3_5}
+import org.opencypher.v9_0.frontend.phases.{CompilationPhaseTracer, RecordingNotificationLogger, InternalNotificationLogger => InternalNotificationLoggerv3_5}
 import org.opencypher.v9_0.util.attribution.SequentialIdGen
 
 case class Cypher34Planner(configv3_5: CypherPlannerConfiguration,
@@ -112,12 +112,12 @@ case class Cypher34Planner(configv3_5: CypherPlannerConfiguration,
         idpV3_4.IDPQueryGraphSolver(singleComponentPlanner, idpV3_4.cartesianProductsOrValueJoins, monitor)
     }
 
-  private def checkForSchemaChanges(planContext: PlanContext): Unit =
-    planContext.getOrCreateFromSchemaState(this, planCache.clear())
+  private val schemaStateKey = SchemaStateKey.newKey()
+  private def checkForSchemaChanges(tcw: TransactionalContextWrapper): Unit =
+    tcw.getOrCreateFromSchemaState(schemaStateKey, planCache.clear())
 
   override def parseAndPlan(preParsedQuery: PreParsedQuery,
                             tracer: CompilationPhaseTracer,
-                            preParsingNotifications: Set[Notification],
                             transactionalContext: TransactionalContext,
                             params: MapValue
                            ): LogicalPlanResult = {
@@ -125,7 +125,7 @@ case class Cypher34Planner(configv3_5: CypherPlannerConfiguration,
     val inputPositionV3_4 = as3_4(preParsedQuery.offset)
     val inputPositionv3_5 = preParsedQuery.offset
     val notificationLoggerV3_4 = new RecordingNotificationLoggerV3_4(Some(inputPositionV3_4))
-    val notificationLoggerv3_5 = new RecordingNotificationLoggerv3_5(Some(inputPositionv3_5))
+    val notificationLoggerv3_5 = new RecordingNotificationLogger(Some(inputPositionv3_5))
 
     runSafely {
       val syntacticQuery =
@@ -189,12 +189,12 @@ case class Cypher34Planner(configv3_5: CypherPlannerConfiguration,
                                      maybeUpdateStrategy.map(helpers.as3_5).getOrElse(defaultUpdateStrategy),
                                      clock,
                                      logicalPlanIdGenv3_5,
-                                     simpleExpressionEvaluator)
+                                     simpleExpressionEvaluator(PlanningQueryContext(transactionalContext)))
 
       // Prepare query for caching
       val preparedQuery = compiler.normalizeQuery(syntacticQuery, contextV3_4)
       val queryParamNames: Seq[String] = preparedQuery.statement().findByAllClass[Parameter].map(x => x.name)
-      checkForSchemaChanges(planContextv3_5)
+      checkForSchemaChanges(tcv3_5)
 
       // If the query is not cached we do full planning + creating of executable plan
       def createPlan(): CacheableLogicalPlan = {
@@ -205,7 +205,10 @@ case class Cypher34Planner(configv3_5: CypherPlannerConfiguration,
           .foreach(notificationLoggerv3_5.log)
 
         val reusabilityState = createReusabilityState(logicalPlanStatev3_5, planContextv3_5)
-        CacheableLogicalPlan(logicalPlanStatev3_5, reusabilityState)
+        // Log notifications/warnings from planning
+        notificationLoggerV3_4.notifications.map(helpers.as3_5).foreach(notificationLoggerv3_5.log)
+
+        CacheableLogicalPlan(logicalPlanStatev3_5, reusabilityState, notificationLoggerv3_5.notifications)
       }
 
       // 3.4 does not produce different plans for different parameter types.
@@ -216,19 +219,18 @@ case class Cypher34Planner(configv3_5: CypherPlannerConfiguration,
           planCache.computeIfAbsentOrStale(Pair.of(syntacticQuery.statement(), Map.empty),
                                            transactionalContext,
                                            createPlan,
+                                           _ => None,
                                            syntacticQuery.queryText).executableQuery
         else
           createPlan()
-
-      // Log notifications/warnings from planning
-      notificationLoggerV3_4.notifications.map(helpers.as3_5).foreach(notificationLoggerv3_5.log)
 
       LogicalPlanResult(
         cacheableLogicalPlan.logicalPlanState,
         queryParamNames,
         ValueConversion.asValues(preparedQuery.extractedParams()),
         cacheableLogicalPlan.reusability,
-        contextv3_5)
+        contextv3_5,
+        cacheableLogicalPlan.notifications)
     }
   }
 

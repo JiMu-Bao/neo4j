@@ -35,6 +35,7 @@ import org.neo4j.helpers.collection.MapUtil;
 import org.neo4j.helpers.progress.ProgressMonitorFactory;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.pagecache.ConfigurableStandalonePageCacheFactory;
@@ -42,10 +43,12 @@ import org.neo4j.kernel.impl.recovery.RecoveryRequiredChecker;
 import org.neo4j.kernel.monitoring.Monitors;
 import org.neo4j.logging.FormattedLogProvider;
 import org.neo4j.logging.LogProvider;
+import org.neo4j.scheduler.JobScheduler;
 
 import static org.neo4j.helpers.Args.jarUsage;
 import static org.neo4j.helpers.Strings.joinAsLines;
 import static org.neo4j.helpers.collection.MapUtil.stringMap;
+import static org.neo4j.kernel.impl.scheduler.JobSchedulerFactory.createInitialisedScheduler;
 
 public class ConsistencyCheckTool
 {
@@ -112,13 +115,14 @@ public class ConsistencyCheckTool
         Config tuningConfiguration = readConfiguration( arguments );
         boolean verbose = isVerbose( arguments );
 
-        checkDbState( storeDir, tuningConfiguration );
+        DatabaseLayout databaseLayout = DatabaseLayout.of( storeDir );
+        checkDbState( databaseLayout, tuningConfiguration );
 
         ZoneId logTimeZone = tuningConfiguration.get( GraphDatabaseSettings.db_timezone ).getZoneId();
         LogProvider logProvider = FormattedLogProvider.withZoneId( logTimeZone ).toOutputStream( systemOut );
         try
         {
-            return consistencyCheckService.runFullConsistencyCheck( storeDir, tuningConfiguration,
+            return consistencyCheckService.runFullConsistencyCheck( databaseLayout, tuningConfiguration,
                     ProgressMonitorFactory.textual( systemError ), logProvider, fs, verbose,
                     new ConsistencyFlags( tuningConfiguration ) );
         }
@@ -128,18 +132,19 @@ public class ConsistencyCheckTool
         }
     }
 
-    private boolean isVerbose( Args arguments )
+    private static boolean isVerbose( Args arguments )
     {
         return arguments.getBoolean( VERBOSE, false, true );
     }
 
-    private void checkDbState( File storeDir, Config tuningConfiguration ) throws ToolFailureException
+    private void checkDbState( DatabaseLayout databaseLayout, Config tuningConfiguration ) throws ToolFailureException
     {
-        try ( PageCache pageCache = ConfigurableStandalonePageCacheFactory.createPageCache( fs, tuningConfiguration ) )
+        try ( JobScheduler jobScheduler = createInitialisedScheduler();
+              PageCache pageCache = ConfigurableStandalonePageCacheFactory.createPageCache( fs, tuningConfiguration, jobScheduler ) )
         {
             RecoveryRequiredChecker requiredChecker = new RecoveryRequiredChecker( fs, pageCache,
                     tuningConfiguration, new Monitors() );
-            if ( requiredChecker.isRecoveryRequiredAt( storeDir ) )
+            if ( requiredChecker.isRecoveryRequiredAt( databaseLayout ) )
             {
                 throw new ToolFailureException( Strings.joinAsLines(
                         "Active logical log detected, this might be a source of inconsistencies.",
@@ -147,7 +152,11 @@ public class ConsistencyCheckTool
                         "To perform recovery please start database and perform clean shutdown." ) );
             }
         }
-        catch ( IOException e )
+        catch ( ToolFailureException tfe )
+        {
+            throw tfe;
+        }
+        catch ( Exception e )
         {
             systemError.printf( "Failure when checking for recovery state: '%s', continuing as normal.%n", e );
         }
@@ -169,7 +178,7 @@ public class ConsistencyCheckTool
         return storeDir;
     }
 
-    private Config readConfiguration( Args arguments ) throws ToolFailureException
+    private static Config readConfiguration( Args arguments ) throws ToolFailureException
     {
         Map<String,String> specifiedConfig = stringMap();
 

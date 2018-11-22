@@ -42,7 +42,7 @@ import org.neo4j.storageengine.api.schema.CapableIndexDescriptor;
 import org.neo4j.storageengine.api.schema.PopulationProgress;
 import org.neo4j.values.storable.Values;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertSame;
 import static org.mockito.Mockito.mock;
 
 public class IndexPopulationTest
@@ -70,7 +70,7 @@ public class IndexPopulationTest
         indexPopulation.flip( false );
 
         // then
-        assertTrue( "flipper should have flipped to failing proxy", flipper.getState() == InternalIndexState.FAILED );
+        assertSame( "flipper should have flipped to failing proxy", flipper.getState(), InternalIndexState.FAILED );
     }
 
     private OnlineIndexProxy onlineIndexProxy( IndexStoreView storeView )
@@ -131,15 +131,18 @@ public class IndexPopulationTest
                     }
 
                     @Override
-                    public PopulationProgress getProgress()
+                    public void acceptUpdate( MultipleIndexPopulator.MultipleIndexUpdater updater, IndexEntryUpdate update, long currentlyIndexedNodeId )
                     {
-                        return null;
+                        if ( update.getEntityId() <= currentlyIndexedNodeId )
+                        {
+                            updater.process( update );
+                        }
                     }
 
                     @Override
-                    public void acceptUpdate( MultipleIndexPopulator.MultipleIndexUpdater updater, IndexEntryUpdate update, long currentlyIndexedNodeId )
+                    public PopulationProgress getProgress()
                     {
-                        updater.process( update );
+                        return null;
                     }
                 };
             }

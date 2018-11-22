@@ -29,7 +29,6 @@ import org.neo4j.kernel.impl.store.id.IdGeneratorFactory;
 import org.neo4j.kernel.impl.store.id.IdType;
 import org.neo4j.kernel.impl.store.record.RelationshipRecord;
 import org.neo4j.logging.LogProvider;
-import org.neo4j.storageengine.api.StorageReader;
 
 import static org.neo4j.kernel.impl.store.NoStoreHeaderFormat.NO_STORE_HEADER_FORMAT;
 
@@ -41,7 +40,8 @@ public class RelationshipStore extends CommonAbstractStore<RelationshipRecord,No
     public static final String TYPE_DESCRIPTOR = "RelationshipStore";
 
     public RelationshipStore(
-            File fileName,
+            File file,
+            File idFile,
             Config configuration,
             IdGeneratorFactory idGeneratorFactory,
             PageCache pageCache,
@@ -49,7 +49,7 @@ public class RelationshipStore extends CommonAbstractStore<RelationshipRecord,No
             RecordFormats recordFormats,
             OpenOption... openOptions )
     {
-        super( fileName, configuration, IdType.RELATIONSHIP, idGeneratorFactory,
+        super( file, idFile, configuration, IdType.RELATIONSHIP, idGeneratorFactory,
                 pageCache, logProvider, TYPE_DESCRIPTOR, recordFormats.relationship(), NO_STORE_HEADER_FORMAT,
                 recordFormats.storeVersion(), openOptions );
     }

@@ -86,6 +86,7 @@ class TransactionBoundPlanContext(txSupplier: () => KernelTransaction, logger: I
   private def getOnlineIndex(reference: IndexReference): Option[IndexDescriptor] =
     txSupplier().schemaRead.indexGetState(reference) match {
       case InternalIndexState.ONLINE => reference match {
+        case ref if ref.isFulltextIndex || ref.isEventuallyConsistent => None
         case cir: CapableIndexDescriptor => Some(IndexDescriptor(cir.schema().getEntityTokenIds()(0), cir.properties, cir.limitations().map(kernelToCypher).toSet))
         case _ => Some(IndexDescriptor(reference.schema().getEntityTokenIds()(0), reference.properties))
       }
@@ -141,9 +142,7 @@ class TransactionBoundPlanContext(txSupplier: () => KernelTransaction, logger: I
     val description = asOption(signature.description())
     val warning = asOption(signature.warning())
 
-    // TODO: Add a trailing argument `ks.eager()` after upgrading to the next 3.3 release
-    //ProcedureSignature(name, input, output, deprecationInfo, mode, description, warning, ks.eager(), Some(handle.id()))
-    ProcedureSignature(name, input, output, deprecationInfo, mode, description, warning, Some(handle.id()))
+    ProcedureSignature(name, input, output, deprecationInfo, mode, description, warning, signature.eager(), Some(handle.id()))
   }
 
   override def functionSignature(name: QualifiedName): Option[UserFunctionSignature] = {

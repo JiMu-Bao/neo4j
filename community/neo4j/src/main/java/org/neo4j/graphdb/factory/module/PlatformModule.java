@@ -22,19 +22,21 @@ package org.neo4j.graphdb.factory.module;
 import java.io.File;
 import java.io.IOException;
 
-import org.neo4j.internal.diagnostics.DiagnosticsManager;
 import org.neo4j.graphdb.facade.GraphDatabaseFacadeFactory;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
+import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule;
 import org.neo4j.graphdb.security.URLAccessRule;
+import org.neo4j.helpers.collection.Pair;
 import org.neo4j.index.internal.gbptree.GroupingRecoveryCleanupWorkCollector;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
+import org.neo4j.internal.diagnostics.DiagnosticsManager;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemLifecycleAdapter;
+import org.neo4j.io.layout.StoreLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.tracing.cursor.context.EmptyVersionContextSupplier;
 import org.neo4j.io.pagecache.tracing.cursor.context.VersionContextSupplier;
-import org.neo4j.kernel.AvailabilityGuard;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.configuration.ConnectorPortRegister;
 import org.neo4j.kernel.extension.GlobalKernelExtensions;
@@ -43,20 +45,18 @@ import org.neo4j.kernel.extension.UnsatisfiedDependencyStrategies;
 import org.neo4j.kernel.impl.api.LogRotationMonitor;
 import org.neo4j.kernel.impl.context.TransactionVersionContextSupplier;
 import org.neo4j.kernel.impl.core.DatabasePanicEventGenerator;
-import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
 import org.neo4j.kernel.impl.factory.DatabaseInfo;
-import org.neo4j.kernel.impl.logging.LogService;
-import org.neo4j.kernel.impl.logging.StoreLogService;
 import org.neo4j.kernel.impl.pagecache.ConfiguringPageCacheFactory;
 import org.neo4j.kernel.impl.pagecache.PageCacheLifecycle;
 import org.neo4j.kernel.impl.query.QueryEngineProvider;
-import org.neo4j.kernel.impl.scheduler.CentralJobScheduler;
+import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory;
 import org.neo4j.kernel.impl.security.URLAccessRules;
 import org.neo4j.kernel.impl.spi.SimpleKernelContext;
-import org.neo4j.kernel.impl.transaction.TransactionStats;
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointerMonitor;
 import org.neo4j.kernel.impl.transaction.state.DataSourceManager;
+import org.neo4j.kernel.impl.util.Dependencies;
 import org.neo4j.kernel.impl.util.collection.CachingOffHeapBlockAllocator;
+import org.neo4j.kernel.impl.util.collection.CapacityLimitingBlockAllocatorDecorator;
 import org.neo4j.kernel.impl.util.collection.CollectionsFactorySupplier;
 import org.neo4j.kernel.impl.util.collection.OffHeapBlockAllocator;
 import org.neo4j.kernel.impl.util.collection.OffHeapCollectionsFactory;
@@ -74,6 +74,10 @@ import org.neo4j.kernel.monitoring.tracing.Tracers;
 import org.neo4j.logging.Level;
 import org.neo4j.logging.Log;
 import org.neo4j.logging.LogProvider;
+import org.neo4j.logging.internal.LogService;
+import org.neo4j.logging.internal.StoreLogService;
+import org.neo4j.scheduler.DeferredExecutor;
+import org.neo4j.scheduler.Group;
 import org.neo4j.scheduler.JobScheduler;
 import org.neo4j.time.Clocks;
 import org.neo4j.time.SystemNanoClock;
@@ -81,11 +85,13 @@ import org.neo4j.udc.UsageData;
 import org.neo4j.udc.UsageDataKeys;
 
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.store_internal_log_path;
+import static org.neo4j.graphdb.factory.GraphDatabaseSettings.tx_state_off_heap_block_cache_size;
+import static org.neo4j.graphdb.factory.GraphDatabaseSettings.tx_state_off_heap_max_cacheable_block_size;
 import static org.neo4j.kernel.lifecycle.LifecycleAdapter.onShutdown;
 
 /**
  * Platform module for {@link GraphDatabaseFacadeFactory}. This creates
- * all the services needed by {@link EditionModule} implementations.
+ * all the services needed by {@link AbstractEditionModule} implementations.
  */
 public class PlatformModule
 {
@@ -99,7 +105,7 @@ public class PlatformModule
 
     public final LifeSupport life;
 
-    public final File storeDir;
+    public final StoreLayout storeLayout;
 
     public final DatabaseInfo databaseInfo;
 
@@ -124,12 +130,6 @@ public class PlatformModule
 
     public final JobScheduler jobScheduler;
 
-    public final AvailabilityGuard availabilityGuard;
-
-    public final ThreadToStatementContextBridge threadToTransactionBridge;
-
-    public final TransactionStats transactionMonitor;
-
     public final SystemNanoClock clock;
 
     public final VersionContextSupplier versionContextSupplier;
@@ -146,19 +146,17 @@ public class PlatformModule
             GraphDatabaseFacadeFactory.Dependencies externalDependencies )
     {
         this.databaseInfo = databaseInfo;
-        this.dataSourceManager = new DataSourceManager();
-        dependencies = new org.neo4j.kernel.impl.util.Dependencies();
+        this.dataSourceManager = new DataSourceManager( config );
+        dependencies = new Dependencies();
         dependencies.satisfyDependency( databaseInfo );
 
         clock = dependencies.satisfyDependency( createClock() );
-
         life = dependencies.satisfyDependency( createLife() );
 
-        // SPI - provided services
-        config.augmentDefaults( GraphDatabaseSettings.neo4j_home, providedStoreDir.getAbsolutePath() );
-        this.config = dependencies.satisfyDependency( config );
+        this.storeLayout = StoreLayout.of( providedStoreDir );
 
-        this.storeDir = providedStoreDir.getAbsoluteFile();
+        config.augmentDefaults( GraphDatabaseSettings.neo4j_home, storeLayout.storeDirectory().getPath() );
+        this.config = dependencies.satisfyDependency( config );
 
         fileSystem = dependencies.satisfyDependency( createFileSystemAbstraction() );
         life.add( new FileSystemLifecycleAdapter( fileSystem ) );
@@ -168,6 +166,7 @@ public class PlatformModule
         dependencies.satisfyDependency( monitors );
 
         jobScheduler = life.add( dependencies.satisfyDependency( createJobScheduler() ) );
+        startDeferredExecutors(jobScheduler, externalDependencies.deferredExecutors());
 
         // Cleanup after recovery, used by GBPTree, added to life in NeoStoreDataSource
         recoveryCleanupWorkCollector = new GroupingRecoveryCleanupWorkCollector( jobScheduler );
@@ -203,7 +202,7 @@ public class PlatformModule
         collectionsFactorySupplier = createCollectionsFactorySupplier( config, life );
 
         dependencies.satisfyDependency( versionContextSupplier );
-        pageCache = dependencies.satisfyDependency( createPageCache( fileSystem, config, logging, tracers, versionContextSupplier ) );
+        pageCache = dependencies.satisfyDependency( createPageCache( fileSystem, config, logging, tracers, versionContextSupplier, jobScheduler ) );
 
         life.add( new PageCacheLifecycle( pageCache ) );
 
@@ -213,16 +212,11 @@ public class PlatformModule
 
         dependencies.satisfyDependency( dataSourceManager );
 
-        availabilityGuard = dependencies.satisfyDependency( createAvailabilityGuard() );
-        threadToTransactionBridge = dependencies.satisfyDependency( new ThreadToStatementContextBridge( availabilityGuard ) );
-
-        transactionMonitor = dependencies.satisfyDependency( createTransactionStats() );
-
         kernelExtensionFactories = externalDependencies.kernelExtensions();
         engineProviders = externalDependencies.executionEngines();
         globalKernelExtensions = dependencies.satisfyDependency(
-                new GlobalKernelExtensions( new SimpleKernelContext( storeDir, databaseInfo, dependencies ), kernelExtensionFactories, dependencies,
-                        UnsatisfiedDependencyStrategies.fail() ) );
+                new GlobalKernelExtensions( new SimpleKernelContext( storeLayout.storeDirectory(), databaseInfo, dependencies ),
+                        kernelExtensionFactories, dependencies, UnsatisfiedDependencyStrategies.fail() ) );
 
         urlAccessRule = dependencies.satisfyDependency( URLAccessRules.combined( externalDependencies.urlAccessRules() ) );
 
@@ -235,20 +229,25 @@ public class PlatformModule
         publishPlatformInfo( dependencies.resolveDependency( UsageData.class ) );
     }
 
+    private void startDeferredExecutors( JobScheduler jobScheduler, Iterable<Pair<DeferredExecutor,Group>> deferredExecutors )
+    {
+        for ( Pair<DeferredExecutor,Group> executorGroupPair : deferredExecutors )
+        {
+            DeferredExecutor executor = executorGroupPair.first();
+            Group group = executorGroupPair.other();
+            executor.satisfyWith( jobScheduler.executor( group ) );
+        }
+    }
+
     protected VersionContextSupplier createCursorContextSupplier( Config config )
     {
         return config.get( GraphDatabaseSettings.snapshot_query ) ? new TransactionVersionContextSupplier()
                                                                   : EmptyVersionContextSupplier.EMPTY;
     }
 
-    protected AvailabilityGuard createAvailabilityGuard()
-    {
-        return new AvailabilityGuard( clock, logging.getInternalLog( AvailabilityGuard.class ) );
-    }
-
     protected StoreLocker createStoreLocker()
     {
-        return new GlobalStoreLocker( fileSystem, storeDir );
+        return new GlobalStoreLocker( fileSystem, storeLayout );
     }
 
     protected SystemNanoClock createClock()
@@ -329,16 +328,16 @@ public class PlatformModule
 
     protected JobScheduler createJobScheduler()
     {
-        return new CentralJobScheduler();
+        return JobSchedulerFactory.createInitialisedScheduler();
     }
 
     protected PageCache createPageCache( FileSystemAbstraction fileSystem, Config config, LogService logging,
-            Tracers tracers, VersionContextSupplier versionContextSupplier )
+            Tracers tracers, VersionContextSupplier versionContextSupplier, JobScheduler jobScheduler )
     {
         Log pageCacheLog = logging.getInternalLog( PageCache.class );
         ConfiguringPageCacheFactory pageCacheFactory = new ConfiguringPageCacheFactory(
                 fileSystem, config, tracers.pageCacheTracer, tracers.pageCursorTracerSupplier, pageCacheLog,
-                versionContextSupplier );
+                versionContextSupplier, jobScheduler );
         PageCache pageCache = pageCacheFactory.getOrCreatePageCache();
 
         if ( config.get( GraphDatabaseSettings.dump_configuration ) )
@@ -356,16 +355,23 @@ public class PlatformModule
         case ON_HEAP:
             return CollectionsFactorySupplier.ON_HEAP;
         case OFF_HEAP:
-            final OffHeapBlockAllocator sharedBlockAllocator = new CachingOffHeapBlockAllocator();
+            final CachingOffHeapBlockAllocator allocator = new CachingOffHeapBlockAllocator(
+                    config.get( tx_state_off_heap_max_cacheable_block_size ),
+                    config.get( tx_state_off_heap_block_cache_size ) );
+            final OffHeapBlockAllocator sharedBlockAllocator;
+            final long maxMemory = config.get( GraphDatabaseSettings.tx_state_max_off_heap_memory );
+            if ( maxMemory > 0 )
+            {
+                sharedBlockAllocator = new CapacityLimitingBlockAllocatorDecorator( allocator, maxMemory );
+            }
+            else
+            {
+                sharedBlockAllocator = allocator;
+            }
             life.add( onShutdown( sharedBlockAllocator::release ) );
             return () -> new OffHeapCollectionsFactory( sharedBlockAllocator );
         default:
             throw new IllegalArgumentException( "Unknown transaction state memory allocation value: " + allocation );
         }
-    }
-
-    protected TransactionStats createTransactionStats()
-    {
-        return new TransactionStats();
     }
 }

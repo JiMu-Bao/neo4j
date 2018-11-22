@@ -19,8 +19,9 @@
  */
 package org.neo4j.cypher.planmatching
 
+import org.neo4j.cypher.internal.ir.v3_5.ProvidedOrder
 import org.neo4j.cypher.internal.runtime.planDescription.InternalPlanDescription.Arguments
-import org.neo4j.cypher.internal.runtime.planDescription.InternalPlanDescription.Arguments.{DbHits, EstimatedRows, Rows}
+import org.neo4j.cypher.internal.runtime.planDescription.InternalPlanDescription.Arguments.{DbHits, EstimatedRows, Order, Rows}
 import org.neo4j.cypher.internal.runtime.planDescription._
 import org.opencypher.v9_0.expressions.Expression
 import org.opencypher.v9_0.util.InputPosition
@@ -52,6 +53,8 @@ trait PlanMatcher extends Matcher[InternalPlanDescription] {
 
   def withDBHits(hits: Long): PlanMatcher
 
+  def withDBHits(): PlanMatcher
+
   def withDBHitsBetween(min: Long, max: Long): PlanMatcher
 
   def withExactVariables(variables: String*): PlanMatcher
@@ -61,6 +64,8 @@ trait PlanMatcher extends Matcher[InternalPlanDescription] {
   def containingArgument(argument: String*): PlanMatcher
 
   def containingArgumentRegex(argument: Regex*): PlanMatcher
+
+  def withOrder(providedOrder: ProvidedOrder): PlanMatcher
 
   def withLHS(lhs: PlanMatcher): PlanMatcher
 
@@ -87,7 +92,7 @@ case class PlanInTree(inner: PlanMatcher) extends PlanMatcher {
         MatchResult(
           matches = false,
           rawFailureMessage = s"Expected to find $toPlanDescription\n but got: \n $plan",
-          rawNegatedFailureMessage = ""
+          rawNegatedFailureMessage = s"Expected not to find $toPlanDescription\n but got: \n $plan"
         )
       )
     }
@@ -112,6 +117,8 @@ case class PlanInTree(inner: PlanMatcher) extends PlanMatcher {
 
   override def withDBHits(hits: Long): PlanMatcher = copy(inner = inner.withDBHits(hits))
 
+  override def withDBHits(): PlanMatcher = copy(inner = inner.withDBHits())
+
   override def withDBHitsBetween(min: Long, max: Long): PlanMatcher = copy(inner = inner.withDBHitsBetween(min, max))
 
   override def withExactVariables(variables: String*): PlanMatcher = copy(inner = inner.withExactVariables(variables: _*))
@@ -122,13 +129,15 @@ case class PlanInTree(inner: PlanMatcher) extends PlanMatcher {
 
   override def containingArgumentRegex(argument: Regex*): PlanMatcher = copy(inner = inner.containingArgumentRegex(argument: _*))
 
+  override def withOrder(providedOrder: ProvidedOrder): PlanMatcher = copy(inner = inner.withOrder(providedOrder))
+
   override def withLHS(lhs: PlanMatcher): PlanMatcher = copy(inner = inner.withLHS(lhs))
 
   override def withRHS(rhs: PlanMatcher): PlanMatcher = copy(inner = inner.withRHS(rhs))
 }
 
 /**
-  * Tries to find a matching plan a certian amount of times in the tree.
+  * Tries to find a matching plan a certain amount of times in the tree.
   *
   * @param expectedCount the expected cound
   * @param inner         a PlanMatcher for the plan to find.
@@ -143,8 +152,8 @@ case class CountInTree(expectedCount: Int, inner: PlanMatcher, atLeast: Boolean 
     val count = matchResults.count(_.matches)
     MatchResult(
       matches = if (atLeast) count >= expectedCount else count == expectedCount,
-      rawFailureMessage = s"Expected to find $toPlanDescription\n ${if (atLeast) "at least " else ""}$expectedCount times but found it $count times.",
-      rawNegatedFailureMessage = s"Did not expect to find $toPlanDescription\n ${if (atLeast) s"more than ${expectedCount - 1}" else s"exactly $expectedCount"} times but found it $count times."
+      rawFailureMessage = s"Expected to find $toPlanDescription\n ${if (atLeast) "at least " else ""}$expectedCount times but found it $count times. Got $plan",
+      rawNegatedFailureMessage = s"Did not expect to find $toPlanDescription\n ${if (atLeast) s"more than ${expectedCount - 1}" else s"exactly $expectedCount"} times but found it $count times. Got $plan"
     )
   }
 
@@ -167,6 +176,8 @@ case class CountInTree(expectedCount: Int, inner: PlanMatcher, atLeast: Boolean 
 
   override def withDBHits(hits: Long): PlanMatcher = copy(inner = inner.withDBHits(hits))
 
+  override def withDBHits(): PlanMatcher = copy(inner = inner.withDBHits())
+
   override def withDBHitsBetween(min: Long, max: Long): PlanMatcher = copy(inner = inner.withDBHitsBetween(min, max))
 
   override def withExactVariables(variables: String*): PlanMatcher = copy(inner = inner.withExactVariables(variables: _*))
@@ -176,6 +187,8 @@ case class CountInTree(expectedCount: Int, inner: PlanMatcher, atLeast: Boolean 
   override def containingArgument(argument: String*): PlanMatcher = copy(inner = inner.containingArgument(argument: _*))
 
   override def containingArgumentRegex(argument: Regex*): PlanMatcher = copy(inner = inner.containingArgumentRegex(argument: _*))
+
+  override def withOrder(providedOrder: ProvidedOrder): PlanMatcher = copy(inner = inner.withOrder(providedOrder))
 
   override def withLHS(lhs: PlanMatcher): PlanMatcher = copy(inner = inner.withLHS(lhs))
 
@@ -189,6 +202,7 @@ case class ExactPlan(name: Option[PlanNameMatcher] = None,
                      estimatedRows: Option[EstimatedRowsMatcher] = None,
                      rows: Option[ActualRowsMatcher] = None,
                      dbHits: Option[DBHitsMatcher] = None,
+                     order: Option[OrderArgumentMatcher] = None,
                      variables: Option[VariablesMatcher] = None,
                      other: Option[StringArgumentsMatcher] = None,
                      lhs: Option[PlanMatcher] = None,
@@ -199,6 +213,7 @@ case class ExactPlan(name: Option[PlanNameMatcher] = None,
     val estimatedRowsResult = estimatedRows.map(_ (plan))
     val rowsResult = rows.map(_ (plan))
     val dbHitsResult = dbHits.map(_ (plan))
+    val orderResult = order.map(_ (plan))
     val variablesResult = variables.map(_ (plan))
     val otherResult = other.map(_ (plan))
 
@@ -227,7 +242,7 @@ case class ExactPlan(name: Option[PlanNameMatcher] = None,
       }
     }
 
-    val allResults = Seq(nameResult, estimatedRowsResult, rowsResult, dbHitsResult, variablesResult, otherResult, lhsResult, rhsResult).flatten
+    val allResults = Seq(nameResult, estimatedRowsResult, rowsResult, dbHitsResult, orderResult, variablesResult, otherResult, lhsResult, rhsResult).flatten
     val firstMatch = allResults.collectFirst {
       case mr if mr.matches => mr
     }
@@ -252,6 +267,7 @@ case class ExactPlan(name: Option[PlanNameMatcher] = None,
     val estRowArg = estimatedRows.map(m => EstimatedRows(m.expectedValue)).toSeq
     val rowArg = rows.map(m => Rows(m.expectedValue)).toSeq
     val dbHitsArg = dbHits.map(m => DbHits(m.expectedValue)).toSeq
+    val orderArg = order.map(m => Order(m.expected)).toSeq
     val otherArgs = other.map(_.expected.toSeq.map(str => Arguments.Expression(JustForToStringExpression(str)))).getOrElse(Seq.empty)
 
     val children = (lhsDesc, rhsDesc) match {
@@ -261,7 +277,7 @@ case class ExactPlan(name: Option[PlanNameMatcher] = None,
       case (None, Some(r)) => TwoChildren(PlanDescriptionImpl(Id(0), "???", NoChildren, Seq.empty, Set.empty), r)
     }
 
-    PlanDescriptionImpl(Id(0), nameDesc, children, otherArgs ++ rowArg ++ estRowArg ++ dbHitsArg, variablesDesc)
+    PlanDescriptionImpl(Id(0), nameDesc, children, otherArgs ++ rowArg ++ estRowArg ++ dbHitsArg ++ orderArg, variablesDesc)
   }
 
   override def withName(name: String): PlanMatcher = copy(name = Some(PlanExactNameMatcher(name)))
@@ -278,6 +294,8 @@ case class ExactPlan(name: Option[PlanNameMatcher] = None,
 
   override def withDBHits(hits: Long): PlanMatcher = copy(dbHits = Some(new ExactArgumentMatcher(hits) with DBHitsMatcher))
 
+  override def withDBHits(): PlanMatcher = copy(dbHits = Some(new RangeArgumentMatcher(1, Long.MaxValue) with DBHitsMatcher))
+
   override def withDBHitsBetween(min: Long, max: Long): PlanMatcher = copy(dbHits = Some(new RangeArgumentMatcher(min, max) with DBHitsMatcher))
 
   override def withExactVariables(variables: String*): PlanMatcher = copy(variables = Some(ExactVariablesMatcher(variables.toSet)))
@@ -287,6 +305,8 @@ case class ExactPlan(name: Option[PlanNameMatcher] = None,
   override def containingArgument(argument: String*): PlanMatcher = copy(other = Some(ContainsExactStringArgumentsMatcher(argument.toSet)))
 
   override def containingArgumentRegex(argument: Regex*): PlanMatcher = copy(other = Some(ContainsRegexStringArgumentsMatcher(argument.toSet)))
+
+  override def withOrder(providedOrder: ProvidedOrder): PlanMatcher = copy(order = Some(OrderArgumentMatcher(providedOrder)))
 
   override def withLHS(lhs: PlanMatcher): PlanMatcher = copy(lhs = Some(lhs))
 

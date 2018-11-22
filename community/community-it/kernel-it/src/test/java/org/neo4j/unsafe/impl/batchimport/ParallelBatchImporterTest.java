@@ -52,11 +52,14 @@ import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.collection.Iterables;
 import org.neo4j.helpers.progress.ProgressMonitorFactory;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.logging.NullLogService;
 import org.neo4j.kernel.impl.store.format.RecordFormats;
 import org.neo4j.kernel.impl.store.format.standard.Standard;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.logging.internal.NullLogService;
+import org.neo4j.scheduler.JobScheduler;
+import org.neo4j.scheduler.ThreadPoolJobScheduler;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.rule.RandomRule;
 import org.neo4j.test.rule.SuppressOutput;
@@ -84,7 +87,6 @@ import static org.neo4j.helpers.collection.Iterators.asSet;
 import static org.neo4j.io.ByteUnit.mebiBytes;
 import static org.neo4j.unsafe.impl.batchimport.AdditionalInitialIds.EMPTY;
 import static org.neo4j.unsafe.impl.batchimport.ImportLogic.NO_MONITOR;
-import static org.neo4j.unsafe.impl.batchimport.InputIterable.replayable;
 import static org.neo4j.unsafe.impl.batchimport.cache.NumberArrayFactory.AUTO_WITHOUT_PAGECACHE;
 import static org.neo4j.unsafe.impl.batchimport.cache.idmapping.IdMappers.longs;
 import static org.neo4j.unsafe.impl.batchimport.cache.idmapping.IdMappers.strings;
@@ -168,16 +170,17 @@ public class ParallelBatchImporterTest
     {
         // GIVEN
         ExecutionMonitor processorAssigner = eagerRandomSaturation( config.maxNumberOfProcessors() );
-        File storeDir = directory.storeDir( "dir" + random.nextAlphaNumericString( 8, 8 ) );
-        final BatchImporter inserter = new ParallelBatchImporter( directory.databaseDir( storeDir ),
-                fileSystemRule.get(), null, config, NullLogService.getInstance(),
-                processorAssigner, EMPTY, Config.defaults(), getFormat(), NO_MONITOR );
+        DatabaseLayout databaseLayout = directory.databaseLayout( "dir" + random.nextAlphaNumericString( 8, 8 ) );
 
         boolean successful = false;
         Groups groups = new Groups();
         IdGroupDistribution groupDistribution = new IdGroupDistribution( NODE_COUNT, NUMBER_OF_ID_GROUPS, random.random(), groups );
         long nodeRandomSeed = random.nextLong();
         long relationshipRandomSeed = random.nextLong();
+        JobScheduler jobScheduler = new ThreadPoolJobScheduler();
+        final BatchImporter inserter = new ParallelBatchImporter( databaseLayout,
+                fileSystemRule.get(), null, config, NullLogService.getInstance(),
+                processorAssigner, EMPTY, Config.defaults(), getFormat(), NO_MONITOR, jobScheduler );
         try
         {
             // WHEN
@@ -197,7 +200,7 @@ public class ParallelBatchImporterTest
 
             // THEN
             GraphDatabaseService db = new TestGraphDatabaseFactory()
-                    .newEmbeddedDatabaseBuilder( storeDir )
+                    .newEmbeddedDatabaseBuilder( databaseLayout.databaseDirectory() )
                     .setConfig( "dbms.backup.enabled", "false" )
                     .newGraphDatabase();
             try ( Transaction tx = db.beginTx() )
@@ -210,14 +213,15 @@ public class ParallelBatchImporterTest
             {
                 db.shutdown();
             }
-            assertConsistent( storeDir );
+            assertConsistent( databaseLayout );
             successful = true;
         }
         finally
         {
+            jobScheduler.close();
             if ( !successful )
             {
-                File failureFile = new File( storeDir, "input" );
+                File failureFile = new File( databaseLayout.databaseDirectory(), "input" );
                 try ( PrintStream out = new PrintStream( failureFile ) )
                 {
                     out.println( "Seed used in this failing run: " + random.seed() );
@@ -232,15 +236,14 @@ public class ParallelBatchImporterTest
         }
     }
 
-    protected void assertConsistent( File storeDir ) throws ConsistencyCheckIncompleteException
+    protected void assertConsistent( DatabaseLayout databaseLayout ) throws ConsistencyCheckIncompleteException
     {
         ConsistencyCheckService consistencyChecker = new ConsistencyCheckService();
-        File databaseDirectory = directory.databaseDir( storeDir );
-        Result result = consistencyChecker.runFullConsistencyCheck( databaseDirectory,
+        Result result = consistencyChecker.runFullConsistencyCheck( databaseLayout,
                 Config.defaults( GraphDatabaseSettings.pagecache_memory, "8m" ),
                 ProgressMonitorFactory.NONE,
                 NullLogProvider.getInstance(), false );
-        assertTrue( "Database contains inconsistencies, there should be a report in " + databaseDirectory,
+        assertTrue( "Database contains inconsistencies, there should be a report in " + databaseLayout.databaseDirectory(),
                 result.isSuccessful() );
     }
 
@@ -527,7 +530,7 @@ public class ParallelBatchImporterTest
     private InputIterable relationships( final long randomSeed, final long count, int batchSize,
             final InputIdGenerator idGenerator, final IdGroupDistribution groups )
     {
-        return replayable( () -> new GeneratingInputIterator<>( count, batchSize, new RandomsStates( randomSeed ),
+        return () -> new GeneratingInputIterator<>( count, batchSize, new RandomsStates( randomSeed ),
                 ( randoms, visitor, id ) -> {
                     randomProperties( randoms, "Name " + id, visitor );
                     ExistingId startNodeExistingId = idGenerator.randomExisting( randoms );
@@ -550,20 +553,20 @@ public class ParallelBatchImporterTest
                         type += "_odd";
                     }
                     visitor.type( type );
-                }, 0 ) );
+                }, 0 );
     }
 
     private InputIterable nodes( final long randomSeed, final long count, int batchSize,
             final InputIdGenerator inputIdGenerator, final IdGroupDistribution groups )
     {
-        return replayable( () -> new GeneratingInputIterator<>( count, batchSize, new RandomsStates( randomSeed ),
+        return () -> new GeneratingInputIterator<>( count, batchSize, new RandomsStates( randomSeed ),
                 ( randoms, visitor, id ) -> {
                     Object nodeId = inputIdGenerator.nextNodeId( randoms, id );
                     Group group = groups.groupOf( id );
                     visitor.id( nodeId, group );
                     randomProperties( randoms, uniqueId( group, nodeId ), visitor );
                     visitor.labels( randoms.selection( TOKENS, 0, TOKENS.length, true ) );
-                }, 0 ) );
+                }, 0 );
     }
 
     private static final String[] TOKENS = {"token1", "token2", "token3", "token4", "token5", "token6", "token7"};

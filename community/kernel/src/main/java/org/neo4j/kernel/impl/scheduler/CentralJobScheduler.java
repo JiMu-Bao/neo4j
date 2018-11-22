@@ -36,7 +36,7 @@ import org.neo4j.scheduler.JobHandle;
 import org.neo4j.scheduler.JobScheduler;
 import org.neo4j.time.Clocks;
 
-public class CentralJobScheduler extends LifecycleAdapter implements JobScheduler
+public class CentralJobScheduler extends LifecycleAdapter implements JobScheduler, AutoCloseable
 {
     private static final AtomicInteger INSTANCE_COUNTER = new AtomicInteger();
 
@@ -69,7 +69,7 @@ public class CentralJobScheduler extends LifecycleAdapter implements JobSchedule
         }
     }
 
-    public CentralJobScheduler()
+    protected CentralJobScheduler()
     {
         workStealingExecutors = new ConcurrentHashMap<>( 1 );
         topLevelGroup = new TopLevelGroup();
@@ -98,8 +98,11 @@ public class CentralJobScheduler extends LifecycleAdapter implements JobSchedule
     @Override
     public void init()
     {
-        schedulerThread.start();
-        started = true;
+        if ( !started )
+        {
+            schedulerThread.start();
+            started = true;
+        }
     }
 
     @Override
@@ -111,7 +114,18 @@ public class CentralJobScheduler extends LifecycleAdapter implements JobSchedule
     @Override
     public ExecutorService workStealingExecutor( Group group, int parallelism )
     {
-        return workStealingExecutors.computeIfAbsent( group, g -> createNewWorkStealingExecutor( g, parallelism ) );
+        return workStealingExecutor( group, parallelism, false );
+    }
+
+    @Override
+    public ExecutorService workStealingExecutorAsyncMode( Group group, int parallelism )
+    {
+        return workStealingExecutor( group, parallelism, true );
+    }
+
+    private ExecutorService workStealingExecutor( Group group, int parallelism, boolean asyncMode )
+    {
+        return workStealingExecutors.computeIfAbsent( group, g -> createNewWorkStealingExecutor( g, parallelism, asyncMode ) );
     }
 
     @Override
@@ -120,11 +134,11 @@ public class CentralJobScheduler extends LifecycleAdapter implements JobSchedule
         return pools.getThreadPool( group ).getThreadFactory();
     }
 
-    private ExecutorService createNewWorkStealingExecutor( Group group, int parallelism )
+    private ExecutorService createNewWorkStealingExecutor( Group group, int parallelism, boolean asyncMode )
     {
         ForkJoinPool.ForkJoinWorkerThreadFactory factory =
                 new GroupedDaemonThreadFactory( group, topLevelGroup );
-        return new ForkJoinPool( parallelism, factory, null, false );
+        return new ForkJoinPool( parallelism, factory, null, asyncMode );
     }
 
     @Override
@@ -179,6 +193,12 @@ public class CentralJobScheduler extends LifecycleAdapter implements JobSchedule
         {
             throw new RuntimeException( "Unable to shut down job scheduler properly.", exception );
         }
+    }
+
+    @Override
+    public void close()
+    {
+        shutdown();
     }
 
     private InterruptedException shutDownScheduler()

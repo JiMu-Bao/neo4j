@@ -66,7 +66,7 @@
     <maven.compiler.target>1.8</maven.compiler.target>
     <licensing.prepend.text>licensing/notice-agpl-prefix.txt</licensing.prepend.text>
     <lucene.version>5.5.5</lucene.version>
-    <bouncycastle.version>1.59</bouncycastle.version>
+    <bouncycastle.version>1.60</bouncycastle.version>
     <generate-config-docs-phase>prepare-package</generate-config-docs-phase>
     <java.exports/>
     <test.runner.jvm/>
@@ -87,8 +87,8 @@
 
     <license-text.header>headers/AGPL-3-header.txt</license-text.header>
 
-    <openCypher.frontend.version>9.0.5</openCypher.frontend.version>
-    <scala-maven-plugin.version>3.3.2</scala-maven-plugin.version>
+    <openCypher.frontend.version>9.0.20181030</openCypher.frontend.version>
+    <scala-maven-plugin.version>3.4.2</scala-maven-plugin.version>
     <scala.version>2.11.12</scala.version>
     <scala.binary.version>2.11</scala.binary.version>
     <asm.version>6.2</asm.version>
@@ -101,17 +101,16 @@
     <currentYear>2018</currentYear>
     <cypher.compatibility.23>2.3.12</cypher.compatibility.23>
     <cypher.compatibility.31>3.1.9</cypher.compatibility.31>
-    <cypher.compatibility.34>3.4.5</cypher.compatibility.34>
+    <cypher.compatibility.34>3.4.9</cypher.compatibility.34>
+    <opencypher.version>1.0.0-M12</opencypher.version>
     <caffeine.version>2.6.2</caffeine.version>
+    <required.maven.version>3.5.2</required.maven.version>
+    <jackson.version>1.9.13</jackson.version>
   </properties>
 
   <modules>
     <module>build-resources</module>
     <module>community</module>
-    <module>enterprise</module>
-    <module>integrationtests</module>
-    <module>stresstests</module>
-    <module>tools</module>
     <module>packaging</module>
   </modules>
 
@@ -164,7 +163,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-javadoc-plugin</artifactId>
-          <version>3.0.0</version>
+          <version>3.0.1</version>
           <executions>
             <execution>
               <id>generate-javadocs</id>
@@ -249,7 +248,7 @@
         <plugin>
           <groupId>org.revapi</groupId>
           <artifactId>revapi-maven-plugin</artifactId>
-          <version>0.10.4</version>
+          <version>0.10.5</version>
           <configuration>
             <versionFormat>^\d+\.\d+\.\d+$</versionFormat>
             <analysisConfiguration>
@@ -267,6 +266,11 @@
                     </include>
                     <exclude>
                       <item>org\.neo4j\.graphdb\.Path</item>
+                      <!--TODO remove this again once released-->
+                      <item>org\.neo4j\.server\.rest\.repr\.ListRepresentation</item>
+                      <item>org\.neo4j\.server\.rest\.repr\.RepresentationType</item>
+                      <item>org\.neo4j\.server\.rest\.repr\.ValueRepresentation</item>
+                      <item>org\.neo4j\.server\.helpers\.PropertyTypeDispatcher</item>
                     </exclude>
                   </classes>
                   <packages>
@@ -299,6 +303,15 @@
                   </packages>
                 </filter>
               </revapi.java>
+              <revapi.reclassify>
+                <item>
+                  <code>java.class.added</code>
+                  <classify>
+                    <BINARY>BREAKING</BINARY>
+                    <SOURCE>BREAKING</SOURCE>
+                  </classify>
+                </item>
+              </revapi.reclassify>
               <revapi.ignore>
                 <item>
                   <!-- Ignore for now since some are already published, should be removed in 4.0 -->
@@ -335,6 +348,13 @@
                   <old>field org.neo4j.graphdb.InputPosition.empty</old>
                   <justification>Changes to this field should not be allowed</justification>
                 </item>
+                <item>
+                  <code>java.class.externalClassExposedInAPI</code>
+                  <new>class org.neo4j.helpers.HostnamePort</new>
+                  <package>org.neo4j.helpers</package>
+                  <classQualifiedName>org.neo4j.helpers.HostnamePort</classQualifiedName>
+                  <justification>This is meant to be exposed</justification>
+                </item>
               </revapi.ignore>
               <revapi.semver.ignore>
                 <enabled>true</enabled>
@@ -354,12 +374,12 @@
             <dependency>
               <groupId>org.revapi</groupId>
               <artifactId>revapi-java</artifactId>
-              <version>0.18.0</version>
+              <version>0.18.1</version>
             </dependency>
             <dependency>
               <groupId>org.revapi</groupId>
               <artifactId>revapi-basic-features</artifactId>
-              <version>0.7.3</version>
+              <version>0.7.4</version>
             </dependency>
           </dependencies>
           <executions>
@@ -436,7 +456,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-jar-plugin</artifactId>
-          <version>3.0.2</version>
+          <version>3.1.0</version>
           <executions>
             <!-- Augment default jar with url -->
             <execution>
@@ -623,7 +643,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-enforcer-plugin</artifactId>
-          <version>3.0.0-M1</version>
+          <version>3.0.0-M2</version>
           <configuration>
             <rules>
               <evaluateBeanshell>
@@ -637,6 +657,9 @@
                   <file>${project.build.testSourceDirectory}/com</file>
                 </files>
               </requireFilesDontExist>
+              <requireMavenVersion>
+                <version>${required.maven.version}</version>
+              </requireMavenVersion>
             </rules>
             <fail>true</fail>
           </configuration>
@@ -675,6 +698,11 @@
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-clean-plugin</artifactId>
+          <version>3.1.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-install-plugin</artifactId>
           <version>2.5.2</version>
         </plugin>
@@ -704,18 +732,18 @@
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>exec-maven-plugin</artifactId>
-          <version>1.4.0</version>
+          <version>1.6.0</version>
         </plugin>
         <plugin>
           <groupId>org.owasp</groupId>
           <artifactId>dependency-check-maven</artifactId>
-          <version>3.1.2</version>
+          <version>3.3.1</version>
           <dependencies>
             <!-- https://mvnrepository.com/artifact/org.owasp/dependency-check-maven -->
             <dependency>
               <groupId>org.owasp</groupId>
               <artifactId>dependency-check-maven</artifactId>
-              <version>3.2.1</version>
+              <version>3.3.1</version>
             </dependency>
           </dependencies>
           <executions>
@@ -753,7 +781,7 @@
           <dependency>
             <groupId>com.puppycrawl.tools</groupId>
             <artifactId>checkstyle</artifactId>
-            <version>8.11</version>
+            <version>8.12</version>
           </dependency>
           <dependency>
             <groupId>org.neo4j.build</groupId>
@@ -856,7 +884,7 @@
                 <plugin>
                     <groupId>org.jacoco</groupId>
                     <artifactId>jacoco-maven-plugin</artifactId>
-                    <version>0.8.1</version>
+                    <version>0.8.2</version>
                     <executions>
                         <execution>
                             <id>default-prepare-agent</id>
@@ -938,7 +966,6 @@
         <jdk>[9, )</jdk>
       </activation>
       <properties>
-        <java.exports>--add-exports=java.base/sun.nio.ch=ALL-UNNAMED</java.exports>
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <scala.java.additional.args>-nobootcp</scala.java.additional.args>
       </properties>
@@ -1021,7 +1048,7 @@
       <dependency>
         <groupId>org.neo4j.driver</groupId>
         <artifactId>neo4j-java-driver</artifactId>
-        <version>1.6.2</version>
+        <version>1.7.0</version>
         <scope>test</scope>
       </dependency>
       <dependency>
@@ -1033,25 +1060,25 @@
       <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava-testlib</artifactId>
-        <version>25.1-jre</version>
+        <version>26.0-jre</version>
         <scope>test</scope>
       </dependency>
 
       <dependency>
         <groupId>org.apache.httpcomponents</groupId>
         <artifactId>httpclient</artifactId>
-        <version>4.5.2</version>
+        <version>4.5.6</version>
       </dependency>
       <dependency>
         <groupId>org.apache.httpcomponents</groupId>
         <artifactId>httpclient</artifactId>
-        <version>4.5.2</version>
+        <version>4.5.6</version>
         <classifier>tests</classifier>
       </dependency>
       <dependency>
         <groupId>org.apache.httpcomponents</groupId>
         <artifactId>httpcore</artifactId>
-        <version>4.4.5</version>
+        <version>4.4.10</version>
       </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>
@@ -1108,7 +1135,7 @@
       <dependency>
         <groupId>org.mockito</groupId>
         <artifactId>mockito-core</artifactId>
-        <version>2.19.0</version>
+        <version>2.21.0</version>
         <scope>test</scope>
       </dependency>
 
@@ -1250,7 +1277,7 @@
       <dependency>
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-lang3</artifactId>
-        <version>3.7</version>
+        <version>3.8</version>
       </dependency>
       <dependency>
         <groupId>org.apache.commons</groupId>
@@ -1260,7 +1287,7 @@
       <dependency>
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-compress</artifactId>
-        <version>1.17</version>
+        <version>1.18</version>
       </dependency>
 
       <!-- Netty is used by three components: Com, Cluster and Bolt Socket Transport.
@@ -1278,7 +1305,7 @@
       <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty-all</artifactId>
-        <version>4.1.24.Final</version>
+        <version>4.1.30.Final</version>
       </dependency>
 
       <dependency>
@@ -1327,17 +1354,17 @@
       <dependency>
         <groupId>org.codehaus.jackson</groupId>
         <artifactId>jackson-core-asl</artifactId>
-        <version>1.9.13</version>
+        <version>${jackson.version}</version>
       </dependency>
       <dependency>
         <groupId>org.codehaus.jackson</groupId>
         <artifactId>jackson-jaxrs</artifactId>
-        <version>1.9.13</version>
+        <version>${jackson.version}</version>
       </dependency>
       <dependency>
         <groupId>org.codehaus.jackson</groupId>
         <artifactId>jackson-mapper-asl</artifactId>
-        <version>1.9.13</version>
+        <version>${jackson.version}</version>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty</groupId>
@@ -1415,30 +1442,25 @@
         <scope>test</scope>
       </dependency>
 
-      <!-- The following 4 dependencies are needed to run neo4j-server test on JDK 9+ where java.xml.bind is missing -->
+      <dependency>
+        <groupId>org.glassfish.jaxb</groupId>
+        <artifactId>jaxb-runtime</artifactId>
+        <version>2.3.0.1</version>
+      </dependency>
+      <dependency>
+        <groupId>org.glassfish.jaxb</groupId>
+        <artifactId>jaxb-core</artifactId>
+        <version>2.3.0.1</version>
+      </dependency>
       <dependency>
         <groupId>javax.xml.bind</groupId>
         <artifactId>jaxb-api</artifactId>
         <version>2.3.0</version>
-        <scope>test</scope>
-      </dependency>
-      <dependency>
-        <groupId>com.sun.xml.bind</groupId>
-        <artifactId>jaxb-impl</artifactId>
-        <version>2.3.0.1</version>
-        <scope>test</scope>
-      </dependency>
-      <dependency>
-        <groupId>com.sun.xml.bind</groupId>
-        <artifactId>jaxb-core</artifactId>
-        <version>2.3.0.1</version>
-        <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>javax.activation</groupId>
         <artifactId>activation</artifactId>
         <version>1.1.1</version>
-        <scope>test</scope>
       </dependency>
 
     </dependencies>

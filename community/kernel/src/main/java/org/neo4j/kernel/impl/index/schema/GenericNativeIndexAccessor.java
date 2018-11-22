@@ -21,45 +21,79 @@ package org.neo4j.kernel.impl.index.schema;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 
+import org.neo4j.gis.spatial.index.curves.SpaceFillingCurveConfiguration;
 import org.neo4j.index.internal.gbptree.GBPTree;
-import org.neo4j.index.internal.gbptree.Layout;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.pagecache.IOLimiter;
 import org.neo4j.io.pagecache.PageCache;
+import org.neo4j.kernel.api.index.IndexDirectoryStructure;
 import org.neo4j.kernel.api.index.IndexProvider;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
+import org.neo4j.kernel.impl.index.schema.config.IndexSpecificSpaceFillingCurveSettingsCache;
+import org.neo4j.kernel.impl.index.schema.config.SpaceFillingCurveSettingsWriter;
 import org.neo4j.kernel.impl.util.Validator;
 import org.neo4j.storageengine.api.schema.IndexReader;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
 import org.neo4j.values.storable.Value;
 
-class GenericNativeIndexAccessor extends NativeIndexAccessor<CompositeGenericKey,NativeIndexValue>
+class GenericNativeIndexAccessor extends NativeIndexAccessor<GenericKey,NativeIndexValue>
 {
+    private final IndexSpecificSpaceFillingCurveSettingsCache spaceFillingCurveSettings;
+    private final IndexDirectoryStructure directoryStructure;
+    private final SpaceFillingCurveConfiguration configuration;
     private Validator<Value[]> validator;
 
-    GenericNativeIndexAccessor( PageCache pageCache, FileSystemAbstraction fs, File storeFile, Layout<CompositeGenericKey,NativeIndexValue> layout,
+    GenericNativeIndexAccessor( PageCache pageCache, FileSystemAbstraction fs, File storeFile, IndexLayout<GenericKey,NativeIndexValue> layout,
             RecoveryCleanupWorkCollector recoveryCleanupWorkCollector, IndexProvider.Monitor monitor, StoreIndexDescriptor descriptor,
-            IndexSamplingConfig samplingConfig ) throws IOException
+            IndexSpecificSpaceFillingCurveSettingsCache spaceFillingCurveSettings, IndexDirectoryStructure directoryStructure,
+            SpaceFillingCurveConfiguration configuration )
     {
-        super( pageCache, fs, storeFile, layout, recoveryCleanupWorkCollector, monitor, descriptor, samplingConfig );
+        super( pageCache, fs, storeFile, layout, monitor, descriptor, new SpaceFillingCurveSettingsWriter( spaceFillingCurveSettings ) );
+        this.spaceFillingCurveSettings = spaceFillingCurveSettings;
+        this.directoryStructure = directoryStructure;
+        this.configuration = configuration;
+        instantiateTree( recoveryCleanupWorkCollector, headerWriter );
     }
 
     @Override
-    protected void afterTreeInstantiation( GBPTree<CompositeGenericKey,NativeIndexValue> tree )
+    public void drop()
     {
-        validator = new GenericIndexKeyValidator( tree.keyValueSizeCap(), layout );
+        super.drop();
+        try
+        {
+            NativeIndexes.deleteIndex( fileSystem, directoryStructure, descriptor.getId(), false );
+        }
+        catch ( IOException e )
+        {
+            throw new UncheckedIOException( e );
+        }
+    }
+
+    @Override
+    protected void afterTreeInstantiation( GBPTree<GenericKey,NativeIndexValue> tree )
+    {
+        validator = new GenericIndexKeyValidator( tree.keyValueSizeCap(), layout, spaceFillingCurveSettings, pageCache.pageSize() );
     }
 
     @Override
     public IndexReader newReader()
     {
-        return new GenericNativeIndexReader( tree, layout, samplingConfig, descriptor );
+        assertOpen();
+        return new GenericNativeIndexReader( tree, layout, descriptor, spaceFillingCurveSettings, configuration );
     }
 
     @Override
     public void validateBeforeCommit( Value[] tuple )
     {
         validator.validate( tuple );
+    }
+
+    @Override
+    public void force( IOLimiter ioLimiter )
+    {
+        // This accessor needs to use the header writer here because coordinate reference systems may have changed since last checkpoint.
+        tree.checkpoint( ioLimiter, headerWriter );
     }
 }

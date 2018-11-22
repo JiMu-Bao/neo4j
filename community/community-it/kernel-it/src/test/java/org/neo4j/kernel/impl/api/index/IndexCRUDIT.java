@@ -50,6 +50,7 @@ import org.neo4j.kernel.api.schema.SchemaDescriptorFactory;
 import org.neo4j.kernel.extension.KernelExtensionFactory;
 import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
+import org.neo4j.kernel.impl.index.schema.CollectingIndexUpdater;
 import org.neo4j.kernel.impl.storemigration.StoreMigrationParticipant;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
 import org.neo4j.storageengine.api.schema.IndexSample;
@@ -63,6 +64,7 @@ import static org.junit.Assert.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.neo4j.graphdb.factory.GraphDatabaseSettings.default_schema_provider;
 import static org.neo4j.helpers.collection.Iterators.asSet;
 import static org.neo4j.helpers.collection.MapUtil.map;
 import static org.neo4j.kernel.impl.api.index.SchemaIndexTestHelper.singleInstanceIndexProviderFactory;
@@ -175,19 +177,15 @@ public class IndexCRUDIT
         factory.setFileSystem( fs.get() );
         factory.setKernelExtensions(
                 Collections.singletonList( mockedIndexProviderFactory ) );
-        db = (GraphDatabaseAPI) factory.newImpermanentDatabase();
+        db = (GraphDatabaseAPI) factory.newImpermanentDatabaseBuilder().setConfig( default_schema_provider, PROVIDER_DESCRIPTOR.name() ).newGraphDatabase();
         ctxSupplier = db.getDependencyResolver().resolveDependency( ThreadToStatementContextBridge.class );
     }
 
     private GatheringIndexWriter newWriter() throws IOException
     {
         GatheringIndexWriter writer = new GatheringIndexWriter();
-        when( mockedIndexProvider.getPopulator( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) )
-            ).thenReturn( writer );
-        when( mockedIndexProvider.getOnlineAccessor( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class )
-            ) ).thenReturn( writer );
-        when( mockedIndexProvider.compareTo( any( IndexProvider.class ) ) )
-                .thenReturn( 1 ); // always pretend to have highest priority
+        when( mockedIndexProvider.getPopulator( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) ) ).thenReturn( writer );
+        when( mockedIndexProvider.getOnlineAccessor( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) ) ).thenReturn( writer );
         return writer;
     }
 
@@ -197,7 +195,7 @@ public class IndexCRUDIT
         db.shutdown();
     }
 
-    private class GatheringIndexWriter extends IndexAccessor.Adapter implements IndexPopulator
+    private static class GatheringIndexWriter extends IndexAccessor.Adapter implements IndexPopulator
     {
         private final Set<IndexEntryUpdate<?>> updatesCommitted = new HashSet<>();
         private final Map<Object,Set<Long>> indexSamples = new HashMap<>();
@@ -227,14 +225,7 @@ public class IndexCRUDIT
         @Override
         public IndexUpdater newUpdater( final IndexUpdateMode mode )
         {
-            return new CollectingIndexUpdater()
-            {
-                @Override
-                public void close()
-                {
-                    updatesCommitted.addAll( updates );
-                }
-            };
+            return new CollectingIndexUpdater( updatesCommitted::addAll );
         }
 
         @Override

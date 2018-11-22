@@ -30,17 +30,17 @@ import org.neo4j.bolt.BoltChannel;
 import org.neo4j.bolt.runtime.BoltStateMachine;
 import org.neo4j.bolt.runtime.BoltStateMachineFactoryImpl;
 import org.neo4j.bolt.security.auth.Authentication;
+import org.neo4j.bolt.testing.BoltTestUtil;
 import org.neo4j.bolt.v1.BoltProtocolV1;
 import org.neo4j.bolt.v2.BoltProtocolV2;
 import org.neo4j.bolt.v3.BoltStateMachineV3;
 import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.DependencyResolver;
-import org.neo4j.kernel.AvailabilityGuard;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.kernel.GraphDatabaseQueryService;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.factory.GraphDatabaseFacade;
-import org.neo4j.kernel.impl.logging.NullLogService;
-import org.neo4j.logging.NullLog;
+import org.neo4j.logging.internal.NullLogService;
 import org.neo4j.test.OnDemandJobScheduler;
 import org.neo4j.udc.UsageData;
 
@@ -54,8 +54,9 @@ import static org.mockito.Mockito.when;
 
 class BoltStateMachineFactoryImplTest
 {
+    private static final String CUSTOM_DB_NAME = "customDbName";
     private static final Clock CLOCK = Clock.systemUTC();
-    private static final BoltChannel CHANNEL = mock( BoltChannel.class );
+    private static final BoltChannel CHANNEL = BoltTestUtil.newTestBoltChannel();
 
     @ParameterizedTest( name = "V{0}" )
     @ValueSource( longs = {BoltProtocolV1.VERSION, BoltProtocolV2.VERSION} )
@@ -97,8 +98,10 @@ class BoltStateMachineFactoryImplTest
 
     private static BoltStateMachineFactoryImpl newBoltFactory( DatabaseManager databaseManager )
     {
+        Config config = Config.defaults( GraphDatabaseSettings.active_database, CUSTOM_DB_NAME );
         return new BoltStateMachineFactoryImpl( databaseManager, new UsageData( new OnDemandJobScheduler() ),
-                new AvailabilityGuard( CLOCK, NullLog.getInstance() ), mock( Authentication.class ), CLOCK, Config.defaults(), NullLogService.getInstance() );
+                mock( Authentication.class ), CLOCK, config,
+                NullLogService.getInstance() );
     }
 
     private static DatabaseManager newDbMock()
@@ -110,7 +113,7 @@ class BoltStateMachineFactoryImplTest
         when( queryService.getDependencyResolver() ).thenReturn( dependencyResolver );
         when( dependencyResolver.resolveDependency( GraphDatabaseQueryService.class ) ).thenReturn( queryService );
         DatabaseManager databaseManager = mock( DatabaseManager.class );
-        when( databaseManager.getDatabaseFacade( DatabaseManager.DEFAULT_DATABASE_NAME ) ).thenReturn( Optional.of( db ) );
+        when( databaseManager.getDatabaseFacade( CUSTOM_DB_NAME ) ).thenReturn( Optional.of( db ) );
         return databaseManager;
     }
 }

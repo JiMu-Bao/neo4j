@@ -22,13 +22,14 @@ package org.neo4j.kernel.impl.index.schema;
 import org.neo4j.index.internal.gbptree.Layout;
 import org.neo4j.io.pagecache.PageCursor;
 
+import static java.lang.Math.min;
 import static java.lang.String.format;
 import static org.neo4j.kernel.impl.index.schema.StringIndexKey.ENTITY_ID_SIZE;
 
 /**
  * {@link Layout} for strings.
  */
-class StringLayout extends IndexLayout<StringIndexKey>
+class StringLayout extends IndexLayout<StringIndexKey,NativeIndexValue>
 {
     StringLayout()
     {
@@ -86,18 +87,26 @@ class StringLayout extends IndexLayout<StringIndexKey>
     @Override
     public void minimalSplitter( StringIndexKey left, StringIndexKey right, StringIndexKey into )
     {
-        int maxLength = Math.min( left.bytesLength, right.bytesLength );
-        int targetLength = 0;
-        for ( ; targetLength < maxLength; targetLength++ )
+        int targetLength = minimalLengthFromRightNeededToDifferentiateFromLeft( left.bytes, left.bytesLength, right.bytes, right.bytesLength );
+        into.copyFrom( right, targetLength );
+    }
+
+    static int minimalLengthFromRightNeededToDifferentiateFromLeft( byte[] leftBytes, int leftLength, byte[] rightBytes, int rightLength )
+    {
+        int lastEqualIndex = -1;
+        int maxLength = min( leftLength, rightLength );
+        for ( int index = 0; index < maxLength; index++ )
         {
-            if ( left.bytes[targetLength] != right.bytes[targetLength] )
+            if ( leftBytes[index] != rightBytes[index] )
             {
-                // Convert to length from array index
-                targetLength++;
                 break;
             }
+            lastEqualIndex++;
         }
-        into.copyFrom( right, targetLength );
+        // Convert from last equal index to first index to differ +1
+        // Convert from index to length +1
+        // Total +2
+        return Math.min( rightLength, lastEqualIndex + 2 );
     }
 
     @Override

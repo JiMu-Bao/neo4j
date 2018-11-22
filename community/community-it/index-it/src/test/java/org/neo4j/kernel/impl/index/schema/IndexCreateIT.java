@@ -39,9 +39,8 @@ public class IndexCreateIT extends KernelIntegrationTest
 {
 
     private static final IndexCreator INDEX_CREATOR =
-            ( schemaWrite, descriptor, providerName ) -> schemaWrite.indexCreate( descriptor, Optional.of( providerName ), Optional.empty() );
-    private static final IndexCreator UNIQUE_CONSTRAINT_CREATOR =
-            ( schemaWrite, descriptor, providerName ) -> schemaWrite.uniquePropertyConstraintCreate( descriptor, Optional.of( providerName ) );
+            ( schemaWrite, descriptor, providerName ) -> schemaWrite.indexCreate( descriptor, providerName, Optional.empty() );
+    private static final IndexCreator UNIQUE_CONSTRAINT_CREATOR = SchemaWrite::uniquePropertyConstraintCreate;
 
     @Test
     public void shouldCreateIndexWithSpecificExistingProviderName() throws KernelException
@@ -91,7 +90,7 @@ public class IndexCreateIT extends KernelIntegrationTest
         {
             // given
             SchemaWrite schemaWrite = schemaWriteInNewTransaction();
-            String provider = indexSetting.providerIdentifier();
+            String provider = indexSetting.providerName();
             LabelSchemaDescriptor descriptor = forLabel( labelId++, 0 );
             creator.create( schemaWrite, descriptor, provider );
 

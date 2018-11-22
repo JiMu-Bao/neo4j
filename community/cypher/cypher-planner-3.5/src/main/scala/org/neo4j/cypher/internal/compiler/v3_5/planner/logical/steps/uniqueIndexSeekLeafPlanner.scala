@@ -20,21 +20,23 @@
 package org.neo4j.cypher.internal.compiler.v3_5.planner.logical.steps
 
 import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.LogicalPlanningContext
-import org.opencypher.v9_0.ast.UsingIndexHint
+import org.neo4j.cypher.internal.ir.v3_5.ProvidedOrder
 import org.neo4j.cypher.internal.planner.v3_5.spi.IndexDescriptor
-import org.opencypher.v9_0.expressions.{Expression, LabelToken, PropertyKeyToken}
-import org.neo4j.cypher.internal.v3_5.logical.plans.{LogicalPlan, QueryExpression}
+import org.neo4j.cypher.internal.v3_5.logical.plans._
+import org.opencypher.v9_0.ast.UsingIndexHint
+import org.opencypher.v9_0.expressions.{Expression, LabelToken}
 
 object uniqueIndexSeekLeafPlanner extends AbstractIndexSeekLeafPlanner {
   protected def constructPlan(idName: String,
                               label: LabelToken,
-                              propertyKeys: Seq[PropertyKeyToken],
+                              properties: Seq[IndexedProperty],
                               valueExpr: QueryExpression[Expression],
                               hint: Option[UsingIndexHint],
                               argumentIds: Set[String],
+                              providedOrder: ProvidedOrder,
                               context: LogicalPlanningContext)
                              (solvedPredicates: Seq[Expression], predicatesForCardinalityEstimation: Seq[Expression]): LogicalPlan =
-      context.logicalPlanProducer.planNodeUniqueIndexSeek(idName, label, propertyKeys, valueExpr, solvedPredicates, hint, argumentIds, context)
+      context.logicalPlanProducer.planNodeUniqueIndexSeek(idName, label, properties, valueExpr, solvedPredicates, hint, argumentIds, providedOrder, context)
 
   override def findIndexesForLabel(labelId: Int, context: LogicalPlanningContext): Iterator[IndexDescriptor] =
     context.planContext.uniqueIndexesGetForLabel(labelId)

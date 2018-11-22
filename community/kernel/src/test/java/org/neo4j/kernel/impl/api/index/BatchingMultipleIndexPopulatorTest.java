@@ -73,7 +73,7 @@ public class BatchingMultipleIndexPopulatorTest
     private final IndexDescriptor index42 = TestIndexDescriptorFactory.forLabel( 42, 42);
 
     @After
-    public void tearDown()
+    public void tearDown() throws Exception
     {
         clearProperty( QUEUE_THRESHOLD_NAME );
         clearProperty( TASK_QUEUE_SIZE_NAME );
@@ -99,7 +99,7 @@ public class BatchingMultipleIndexPopulatorTest
         batchingPopulator.queueUpdate( update1 );
         batchingPopulator.queueUpdate( update2 );
 
-        batchingPopulator.populateFromUpdateQueueBatched( 42 );
+        batchingPopulator.populateFromQueueBatched( 42 );
 
         verify( updater, never() ).process( any() );
         verify( populator, never() ).newPopulatingUpdater( any() );
@@ -135,7 +135,7 @@ public class BatchingMultipleIndexPopulatorTest
         batchingPopulator.queueUpdate( update2 );
         batchingPopulator.queueUpdate( update3 );
 
-        batchingPopulator.populateFromUpdateQueue( 42 );
+        batchingPopulator.populateFromQueueBatched( 42 );
 
         verify( updater1 ).process( update1 );
         verify( updater1 ).process( update3 );
@@ -158,6 +158,10 @@ public class BatchingMultipleIndexPopulatorTest
         verify( executor, never() ).shutdown();
 
         storeScan.run();
+        verify( executor, never() ).shutdown();
+        verify( executor, never() ).awaitTermination( anyLong(), any() );
+
+        batchingPopulator.close( true );
         verify( executor ).shutdown();
         verify( executor ).awaitTermination( anyLong(), any() );
     }
@@ -191,6 +195,10 @@ public class BatchingMultipleIndexPopulatorTest
             assertSame( scanError, t );
         }
 
+        verify( executor, never() ).shutdownNow();
+        verify( executor, never() ).awaitTermination( anyLong(), any() );
+
+        batchingPopulator.close( false );
         verify( executor ).shutdownNow();
         verify( executor ).awaitTermination( anyLong(), any() );
     }

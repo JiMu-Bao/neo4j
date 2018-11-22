@@ -29,8 +29,8 @@ import java.nio.file.Files;
 import java.util.stream.Stream;
 
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
-import org.neo4j.kernel.impl.logging.LogService;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.logging.internal.LogService;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.rule.TestDirectory;
 
@@ -49,7 +49,7 @@ public class GraphDatabaseInternalLogIT
     public void shouldWriteToInternalDiagnosticsLog() throws Exception
     {
         // Given
-        new TestGraphDatabaseFactory().newEmbeddedDatabaseBuilder( testDir.storeDir() )
+        new TestGraphDatabaseFactory().newEmbeddedDatabaseBuilder( testDir.databaseDir() )
                 .setConfig( GraphDatabaseSettings.logs_directory, testDir.directory("logs").getAbsolutePath() )
                 .newGraphDatabase().shutdown();
         File internalLog = new File( testDir.directory( "logs" ), INTERNAL_LOG_FILE );
@@ -58,8 +58,8 @@ public class GraphDatabaseInternalLogIT
         assertThat( internalLog.isFile(), is( true ) );
         assertThat( internalLog.length(), greaterThan( 0L ) );
 
-        assertEquals( 1, countOccurrences( internalLog, "Database is now ready" ) );
-        assertEquals( 1, countOccurrences( internalLog, "Database is now unavailable" ) );
+        assertEquals( 1, countOccurrences( internalLog, "Database graph.db is ready." ) );
+        assertEquals( 2, countOccurrences( internalLog, "Database graph.db is unavailable." ) );
     }
 
     @Test

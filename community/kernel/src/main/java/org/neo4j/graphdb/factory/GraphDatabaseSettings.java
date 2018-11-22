@@ -31,13 +31,11 @@ import org.neo4j.configuration.Internal;
 import org.neo4j.configuration.LoadableConfig;
 import org.neo4j.configuration.ReplacedBy;
 import org.neo4j.csv.reader.Configuration;
-import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.config.Setting;
 import org.neo4j.helpers.AdvertisedSocketAddress;
 import org.neo4j.helpers.ListenSocketAddress;
 import org.neo4j.io.ByteUnit;
 import org.neo4j.kernel.configuration.BoltConnectorValidator;
-import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.configuration.ConfigurationMigrator;
 import org.neo4j.kernel.configuration.GraphDatabaseConfigurationMigrator;
 import org.neo4j.kernel.configuration.Group;
@@ -51,10 +49,8 @@ import org.neo4j.kernel.impl.factory.Edition;
 import org.neo4j.logging.Level;
 import org.neo4j.logging.LogTimeZone;
 
-import static org.neo4j.graphdb.factory.GraphDatabaseSettings.SchemaIndex.LUCENE10;
-import static org.neo4j.graphdb.factory.GraphDatabaseSettings.SchemaIndex.NATIVE10;
-import static org.neo4j.graphdb.factory.GraphDatabaseSettings.SchemaIndex.NATIVE20;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.SchemaIndex.NATIVE_BTREE10;
+import static org.neo4j.io.ByteUnit.kibiBytes;
 import static org.neo4j.kernel.configuration.Settings.BOOLEAN;
 import static org.neo4j.kernel.configuration.Settings.BYTES;
 import static org.neo4j.kernel.configuration.Settings.DEFAULT;
@@ -72,18 +68,20 @@ import static org.neo4j.kernel.configuration.Settings.TRUE;
 import static org.neo4j.kernel.configuration.Settings.advertisedAddress;
 import static org.neo4j.kernel.configuration.Settings.buildSetting;
 import static org.neo4j.kernel.configuration.Settings.derivedSetting;
+import static org.neo4j.kernel.configuration.Settings.except;
 import static org.neo4j.kernel.configuration.Settings.illegalValueMessage;
 import static org.neo4j.kernel.configuration.Settings.legacyFallback;
 import static org.neo4j.kernel.configuration.Settings.list;
 import static org.neo4j.kernel.configuration.Settings.listenAddress;
 import static org.neo4j.kernel.configuration.Settings.matches;
 import static org.neo4j.kernel.configuration.Settings.min;
-import static org.neo4j.kernel.configuration.Settings.options;
 import static org.neo4j.kernel.configuration.Settings.optionsIgnoreCase;
+import static org.neo4j.kernel.configuration.Settings.optionsObeyCase;
 import static org.neo4j.kernel.configuration.Settings.pathSetting;
 import static org.neo4j.kernel.configuration.Settings.range;
 import static org.neo4j.kernel.configuration.Settings.setting;
 import static org.neo4j.kernel.configuration.ssl.LegacySslPolicyConfig.LEGACY_POLICY_NAME;
+import static org.neo4j.util.Preconditions.checkArgument;
 
 /**
  * Settings for Neo4j.
@@ -100,6 +98,9 @@ public class GraphDatabaseSettings implements LoadableConfig
     // default unspecified transaction timeout
     public static final long UNSPECIFIED_TIMEOUT = 0L;
 
+    public static final String SYSTEM_DATABASE_NAME = "system.db";
+    public static final String DEFAULT_DATABASE_NAME = "graph.db";
+
     @SuppressWarnings( "unused" ) // accessed by reflection
     @Migrator
     private static final ConfigurationMigrator migrator = new GraphDatabaseConfigurationMigrator();
@@ -111,7 +112,8 @@ public class GraphDatabaseSettings implements LoadableConfig
             setting( "unsupported.dbms.directories.neo4j_home", PATH, NO_DEFAULT );
 
     @Description( "Name of the database to load" )
-    public static final Setting<String> active_database = setting( "dbms.active_database", STRING, DatabaseManager.DEFAULT_DATABASE_NAME );
+    public static final Setting<String> active_database =
+            buildSetting( "dbms.active_database", STRING, DEFAULT_DATABASE_NAME ).constraint( except( SYSTEM_DATABASE_NAME ) ).build();
 
     @Description( "Path of the data directory. You must not configure more than one Neo4j installation to use the " +
             "same data directory." )
@@ -142,9 +144,15 @@ public class GraphDatabaseSettings implements LoadableConfig
     @Internal
     public static final Setting<String> editionName = setting( "unsupported.dbms.edition", STRING, Edition.unknown.toString() );
 
+    /**
+     * @deprecated This setting is deprecated and will be removed in 4.0.
+     * Please use connector configuration {@link org.neo4j.kernel.configuration.Connector#enabled} instead.
+     */
     @Title( "Disconnected" )
     @Internal
-    @Description( "Disable all protocol connectors." )
+    @Description( "Disable all Bolt protocol connectors. This setting is deprecated and will be removed in 4.0. Please use connector configuration instead." )
+    @Deprecated
+    @ReplacedBy( "dbms.connector.X.enabled" )
     public static final Setting<Boolean> disconnected = setting( "unsupported.dbms.disconnected", BOOLEAN, FALSE );
 
     @Description( "Print out the effective Neo4j configuration after startup." )
@@ -181,12 +189,12 @@ public class GraphDatabaseSettings implements LoadableConfig
     @Description( "Set this to specify the default parser (language version)." )
     public static final Setting<String> cypher_parser_version = setting(
             "cypher.default_language_version",
-            options( "2.3", "3.1", "3.3","3.5", DEFAULT ), DEFAULT );
+            optionsObeyCase( "2.3", "3.1", "3.4","3.5", DEFAULT ), DEFAULT );
 
     @Description( "Set this to specify the default planner for the default language version." )
     public static final Setting<String> cypher_planner = setting(
             "cypher.planner",
-            options( "COST", "RULE", DEFAULT ), DEFAULT );
+            optionsObeyCase( "COST", "RULE", DEFAULT ), DEFAULT );
 
     @Description( "Set this to specify the behavior when Cypher planner or runtime hints cannot be fulfilled. "
             + "If true, then non-conformance will result in an error, otherwise only a warning is generated." )
@@ -222,15 +230,28 @@ public class GraphDatabaseSettings implements LoadableConfig
     public static final Setting<Boolean> forbid_shortestpath_common_nodes = setting(
             "cypher.forbid_shortestpath_common_nodes", BOOLEAN, TRUE );
 
+    @Description( "Set this to change the behavior for Cypher create relationship when the start or end node is missing. " +
+            "By default this fails the query and stops execution, but by setting this flag the create operation is " +
+            "simply not performed and execution continues." )
+    public static final Setting<Boolean> cypher_lenient_create_relationship = setting( "cypher.lenient_create_relationship", BOOLEAN, FALSE );
+
     @Description( "Set this to specify the default runtime for the default language version." )
     @Internal
     public static final Setting<String> cypher_runtime = setting(
             "unsupported.cypher.runtime",
         optionsIgnoreCase( "INTERPRETED", "COMPILED", "SLOTTED" , "MORSEL", DEFAULT ), DEFAULT );
 
-    @Description( "By setting this to true compiled expressions will be disabled and only interpreted expressions will be used." )
+    @Description( "Choose the expression engine. The default is to only compile expressions that are hot, if 'COMPILED' " +
+                  "is chosen all expressions will be compiled directly and if 'INTERPRETED' is chosen expressions will " +
+                  "never be compiled." )
     @Internal
-    public static final Setting<Boolean> cypher_disable_compiled_expressions = setting( "unsupported.cypher.disable_compiled_expressions", BOOLEAN, FALSE );
+    public static final Setting<String> cypher_expression_engine = setting(
+            "unsupported.cypher.expression_engine", optionsIgnoreCase( "INTERPRETED", "COMPILED", "ONLY_WHEN_HOT", DEFAULT ), DEFAULT );
+
+    @Description( "Number of uses before an expression is considered for compilation" )
+    @Internal
+    public static final Setting<Integer> cypher_expression_recompilation_limit =
+            buildSetting( "unsupported.cypher.expression_recompilation_limit", INTEGER, "1" ).constraint( min( 0 ) ).build();
 
     @Description( "Enable tracing of compilation in cypher." )
     @Internal
@@ -312,7 +333,7 @@ public class GraphDatabaseSettings implements LoadableConfig
                   "Setting the algorithm to 'none' will cause the threshold to not decay over time." )
     @Internal
     public static final Setting<String> cypher_replan_algorithm = setting( "unsupported.cypher.replan_algorithm",
-            options( "inverse", "exponential", "none", DEFAULT ), DEFAULT );
+            optionsObeyCase( "inverse", "exponential", "none", DEFAULT ), DEFAULT );
 
     @Description( "Enable using minimum cardinality estimates in the Cypher cost planner, so that cardinality " +
                   "estimates for logical plan operators are not allowed to go below certain thresholds even when " +
@@ -349,11 +370,15 @@ public class GraphDatabaseSettings implements LoadableConfig
             buildSetting( "dbms.import.csv.buffer_size", INTEGER, Integer.toString( 2 * Configuration.MB ) )
                     .constraint( min( 1 ) ).build();
 
-    @Description( "Enables or disables tracking of how much time a query spends actively executing on the CPU." )
+    @Description( "Enables or disables tracking of how much time a query spends actively executing on the CPU. " +
+                  "Calling `dbms.listQueries` will display the time. " +
+                  "This can also be logged in the query log by using `log_queries_detailed_time_logging_enabled`." )
     @Dynamic
     public static final Setting<Boolean> track_query_cpu_time = setting( "dbms.track_query_cpu_time", BOOLEAN, FALSE );
 
-    @Description( "Enables or disables tracking of how many bytes are allocated by the execution of a query." )
+    @Description( "Enables or disables tracking of how many bytes are allocated by the execution of a query. " +
+                  "Calling `dbms.listQueries` will display the time. " +
+                  "This can also be logged in the query log by using `log_queries_allocation_logging_enabled`." )
     @Dynamic
     public static final Setting<Boolean> track_query_allocation = setting( "dbms.track_query_allocation", BOOLEAN, FALSE );
 
@@ -366,6 +391,11 @@ public class GraphDatabaseSettings implements LoadableConfig
     @Internal
     public static final Setting<Integer> cypher_morsel_size =
             setting( "unsupported.cypher.morsel_size", INTEGER, "10000" );
+
+    @Description( "Duration in milliseconds that parallel runtime waits on a task before trying another task" )
+    @Internal
+    public static final Setting<Integer> cypher_task_wait =
+            setting( "unsupported.cypher.task_wait", INTEGER, "30000" );
 
     @Description( "Number of threads to allocate to Cypher worker threads. If set to 0, two workers will be started" +
             " for every physical core in the system." )
@@ -411,6 +441,10 @@ public class GraphDatabaseSettings implements LoadableConfig
                  "procedures will be loaded if they are placed in this directory." )
     public static final Setting<File> plugin_dir = pathSetting( "dbms.directories.plugins", "plugins" );
 
+    @Description( "Threshold for rotation of the user log. If set to 0 log rotation is disabled." )
+    public static final Setting<Long> store_user_log_rotation_threshold =
+            buildSetting( "dbms.logs.user.rotation.size", BYTES, "0" ).constraint( range( 0L, Long.MAX_VALUE ) ).build();
+
     @Description( "Threshold for rotation of the debug log." )
     public static final Setting<Long> store_internal_log_rotation_threshold =
             buildSetting( "dbms.logs.debug.rotation.size", BYTES, "20m" ).constraint( range( 0L, Long.MAX_VALUE ) ).build();
@@ -422,17 +456,17 @@ public class GraphDatabaseSettings implements LoadableConfig
 
     @Description( "Debug log level threshold." )
     public static final Setting<Level> store_internal_log_level = setting( "dbms.logs.debug.level",
-            options( Level.class ), "INFO" );
+            optionsObeyCase( Level.class ), "INFO" );
 
     @Description( "Database timezone. Among other things, this setting influences which timezone the logs and monitoring procedures use." )
     public static final Setting<LogTimeZone> db_timezone =
-            setting( "dbms.db.timezone", options( LogTimeZone.class ), LogTimeZone.UTC.name() );
+            setting( "dbms.db.timezone", optionsObeyCase( LogTimeZone.class ), LogTimeZone.UTC.name() );
 
     @Description( "Database logs timezone." )
     @Deprecated
     @ReplacedBy( "dbms.db.timezone" )
     public static final Setting<LogTimeZone> log_timezone =
-            setting( "dbms.logs.timezone", options( LogTimeZone.class ), LogTimeZone.UTC.name() );
+            setting( "dbms.logs.timezone", optionsObeyCase( LogTimeZone.class ), LogTimeZone.UTC.name() );
 
     @Description( "Database timezone for temporal functions. All Time and DateTime values that are created without " +
             "an explicit timezone will use this configured default timezone." )
@@ -444,9 +478,17 @@ public class GraphDatabaseSettings implements LoadableConfig
     public static final Setting<Duration> counts_store_rotation_timeout =
             setting( "unsupported.dbms.counts_store_rotation_timeout", DURATION, "10m" );
 
+    @Description( "Minimum time interval after last rotation of the user log before it may be rotated again." )
+    public static final Setting<Duration> store_user_log_rotation_delay =
+            setting( "dbms.logs.user.rotation.delay", DURATION, "300s" );
+
     @Description( "Minimum time interval after last rotation of the debug log before it may be rotated again." )
     public static final Setting<Duration> store_internal_log_rotation_delay =
             setting( "dbms.logs.debug.rotation.delay", DURATION, "300s" );
+
+    @Description( "Maximum number of history files for the user log." )
+    public static final Setting<Integer> store_user_log_max_archives =
+            buildSetting( "dbms.logs.user.rotation.keep_number", INTEGER, "7" ).constraint( min( 1 ) ).build();
 
     @Description( "Maximum number of history files for the debug log." )
     public static final Setting<Integer> store_internal_log_max_archives =
@@ -571,25 +613,22 @@ public class GraphDatabaseSettings implements LoadableConfig
 
     public enum SchemaIndex
     {
-        NATIVE_BTREE10( 0, "native-btree", "1.0" ), // TODO: Zero because should not be default yet.
-        NATIVE20( 3, "lucene+native", "2.0" ),
-        NATIVE10( 2, "lucene+native", "1.0" ),
-        LUCENE10( 1, "lucene", "1.0" );
+        NATIVE_BTREE10( "native-btree", "1.0", false ),
+        NATIVE20( "lucene+native", "2.0", true ),
+        NATIVE10( "lucene+native", "1.0", true ),
+        LUCENE10( "lucene", "1.0", true );
 
-        private final int priority; // Higher is better
-        private final String providerName;
+        private final String providerKey;
         private final String providerVersion;
+        private final boolean deprecated;
+        private final String providerName;
 
-        SchemaIndex( int priority, String providerName, String providerVersion )
+        SchemaIndex( String providerKey, String providerVersion, boolean deprecated )
         {
-            this.priority = priority;
-            this.providerName = providerName;
+            this.providerKey = providerKey;
             this.providerVersion = providerVersion;
-        }
-
-        public String providerIdentifier()
-        {
-            return providerName + "-" + providerVersion;
+            this.deprecated = deprecated;
+            this.providerName = toProviderName( providerKey, providerVersion );
         }
 
         public String providerName()
@@ -597,43 +636,39 @@ public class GraphDatabaseSettings implements LoadableConfig
             return providerName;
         }
 
+        public String providerKey()
+        {
+            return providerKey;
+        }
+
         public String providerVersion()
         {
             return providerVersion;
         }
 
-        public int priority( Config config )
+        public boolean deprecated()
         {
-            String configuredSchemaProvider = config.get( GraphDatabaseSettings.default_schema_provider );
-            return providerIdentifier().equals( configuredSchemaProvider ) ? 100 : priority;
+            return deprecated;
+        }
+
+        private static String toProviderName( String providerName, String providerVersion )
+        {
+            return providerName + "-" + providerVersion;
         }
     }
 
-    @Description( "Index provider to use for newly created schema indexes. " +
+    @Description(
+            "Index provider to use for newly created schema indexes. " +
             "An index provider may store different value types in separate physical indexes. " +
-            "lucene-1.0: Store spatial and temporal value types in native indexes, remaining value types in a Lucene index. " +
-            "lucene+native-1.0: Store numbers in a native index and remaining value types like lucene-1.0. " +
-            "This improves read and write performance for non-composite indexed numbers. " +
-            "lucene+native-2.0: Store strings in a native index and remaining value types like lucene+native-1.0. " +
-            "This improves write performance for non-composite indexed strings. " +
-            "This version of the native string index has a value limit of 4039 bytes, such that byte-representation " +
-            "of a string to index cannot be larger than that limit, or the transaction trying to index such a value will fail. " +
-            "This version of the native string index also has reduced performance for CONTAINS and ENDS WITH queries, " +
-            "due to resorting to index scan+filter internally. " +
-            "native-btree-1.0: Store all value, including composite value, in native index. " +
-            "Just like lucene+native-2.0 there is a value size limit of 4039 bytes. For composite indexes this limit is for all of the values in " +
-            "the indexed key combined. The same limitations for CONTAINS and ENDS WITH queries as for lucene+native-2.0 also applies" +
-            "to native-btree-1.0." +
-            "Native indexes generally has these benefits over Lucene:\n" +
-            "- Faster writes\n" +
-            "- Less garbage and heap presence\n" +
-            "- Less CPU resources per operation\n" +
-            "- Controllable memory usage, due to being bound by the page cache" )
-    public static final Setting<String> default_schema_provider =
-            setting( "dbms.index.default_schema_provider",
-                    optionsIgnoreCase( NATIVE20.providerIdentifier(), NATIVE10.providerIdentifier(), LUCENE10.providerIdentifier(),
-                            NATIVE_BTREE10.providerIdentifier() ),
-                    null );
+            "lucene-1.0: Spatial and temporal value types are stored in native indexes, remaining value types in Lucene index. " +
+            "lucene+native-1.0: Spatial, temporal and number value types are stored in native indexes and remaining value types in Lucene index. " +
+            "lucene+native-2.0: Spatial, temporal, number and string value types are stored in native indexes and remaining value types in Lucene index. " +
+            "native-btree-1.0: All value types and arrays of all value types, even composite keys, are stored in one native index. " +
+            "A native index has faster updates, less heap and CPU usage compared to a Lucene index. " +
+            "A native index has these limitations: " +
+            "Index key (be it single or composite) size limit of 4039 bytes - transaction resulting in index key surpassing that will fail. " +
+            "Reduced performance of CONTAINS and ENDS WITH string index queries, compared to a Lucene index." )
+    public static final Setting<String> default_schema_provider = setting( "dbms.index.default_schema_provider", STRING, NATIVE_BTREE10.providerName() );
 
     @Description( "Location where Neo4j keeps the logical transaction logs." )
     public static final Setting<File> logical_logs_location =
@@ -720,6 +755,10 @@ public class GraphDatabaseSettings implements LoadableConfig
             "This feature available in Neo4j Enterprise Edition." )
     public static final Setting<Boolean> pagecache_warmup_enabled = setting( "unsupported.dbms.memory.pagecache.warmup.enable", BOOLEAN, TRUE );
 
+    @Description( "Allows the enabling or disabling of the file watcher service." +
+            " This is an auxiliary service but should be left enabled in almost all cases." )
+    public static final Setting<Boolean> filewatcher_enabled = setting( "dbms.filewatcher.enabled", BOOLEAN, TRUE );
+
     /**
      * Block size properties values depends from selected record format.
      * We can't figured out record format until it will be selected by corresponding edition.
@@ -789,6 +828,11 @@ public class GraphDatabaseSettings implements LoadableConfig
     public static final Setting<Boolean> log_queries =
             setting( "dbms.logs.query.enabled", BOOLEAN, FALSE );
 
+    @Description( "Send user logs to the process stdout. " +
+            "If this is disabled then logs will instead be sent to the file _neo4j.log_ located in the logs directory. " +
+            "For location of the Logs directory, see <<file-locations>>." )
+    public static final Setting<Boolean> store_user_log_to_stdout = setting( "dbms.logs.user.stdout_enabled", BOOLEAN, TRUE );
+
     @Description( "Path of the logs directory." )
     public static final Setting<File> logs_directory = pathSetting( "dbms.directories.logs", "logs" );
 
@@ -797,6 +841,10 @@ public class GraphDatabaseSettings implements LoadableConfig
             logs_directory,
             logs -> new File( logs, "query.log" ),
             PATH );
+
+    @Description( "Path to the user log file." )
+    public static final Setting<File> store_user_log_path =
+            derivedSetting( "dbms.logs.user.path", logs_directory, logs -> new File( logs, "neo4j.log" ), PATH );
 
     @Description( "Path to the debug log file." )
     public static final Setting<File> store_internal_log_path = derivedSetting( "dbms.logs.debug.path",
@@ -1016,12 +1064,38 @@ public class GraphDatabaseSettings implements LoadableConfig
         OFF_HEAP
     }
 
-    @Internal
-    @Description( "[Experimental] Defines whether memory for transaction state should allocaten on- or off-heap." )
+    @Description( "Defines whether memory for transaction state should be allocated on- or off-heap." )
     public static final Setting<TransactionStateMemoryAllocation> tx_state_memory_allocation = buildSetting(
-            "unsupported.dbms.tx_state.memory_allocation",
-            options( TransactionStateMemoryAllocation.class, true ),
-            TransactionStateMemoryAllocation.ON_HEAP.name() ).build();
+            "dbms.tx_state.memory_allocation",
+            optionsIgnoreCase( TransactionStateMemoryAllocation.class ),
+            TransactionStateMemoryAllocation.OFF_HEAP.name() ).build();
+
+    @Description( "The maximum amount of off-heap memory that can be used to store transaction state data; it's a total amount of memory " +
+            "shared across all active transactions. Zero means 'unlimited'. Used when dbms.tx_state.memory_allocation is set to 'OFF_HEAP'." )
+    public static final Setting<Long> tx_state_max_off_heap_memory = buildSetting(
+            "dbms.tx_state.max_off_heap_memory", BYTES, "2G" )
+            .constraint( min( 0L ) )
+            .build();
+
+    @Description( "Defines the maximum size of an off-heap memory block that can be cached to speed up allocations for transaction state data. " +
+            "The value must be a power of 2." )
+    public static final Setting<Long> tx_state_off_heap_max_cacheable_block_size = buildSetting(
+            "dbms.tx_state.off_heap.max_cacheable_block_size", BYTES, "512k" )
+            .constraint( min( kibiBytes( 4 ) ) )
+            .constraint( ( x, ignore ) ->
+            {
+                checkArgument( Long.bitCount( x ) == 1, "Value must be a power of 2: %d", x );
+                return x;
+            } )
+            .build();
+
+    @Description( "Defines the size of the off-heap memory blocks cache. The cache will contain this number of blocks for each block size " +
+            "that is power of two. Thus, maximum amount of memory used by blocks cache can be calculated as " +
+            "2 * dbms.tx_state.off_heap.max_cacheable_block_size * dbms.tx_state.off_heap.block_cache_size" )
+    public static final Setting<Integer> tx_state_off_heap_block_cache_size = buildSetting(
+            "dbms.tx_state.off_heap.block_cache_size", INTEGER, "128" )
+            .constraint( min( 16 ) )
+            .build();
 
     // Needed to validate config, accessed via reflection
     @SuppressWarnings( "unused" )
@@ -1063,7 +1137,7 @@ public class GraphDatabaseSettings implements LoadableConfig
         {
             group = new GroupSettingSupport( Connector.class, key );
             enabled = group.scope( setting( "enabled", BOOLEAN, FALSE ) );
-            type = group.scope( setting( "type", options( ConnectorType.class ), NO_DEFAULT ) );
+            type = group.scope( setting( "type", optionsObeyCase( ConnectorType.class ), NO_DEFAULT ) );
         }
 
         public enum ConnectorType
@@ -1109,7 +1183,7 @@ public class GraphDatabaseSettings implements LoadableConfig
         {
             super( key, null );
             encryption_level = group.scope(
-                    setting( "tls_level", options( EncryptionLevel.class ), EncryptionLevel.OPTIONAL.name() ) );
+                    setting( "tls_level", optionsObeyCase( EncryptionLevel.class ), EncryptionLevel.OPTIONAL.name() ) );
             Setting<ListenSocketAddress> legacyAddressSetting = listenAddress( "address", 7687 );
             Setting<ListenSocketAddress> listenAddressSetting = legacyFallback( legacyAddressSetting,
                     listenAddress( "listen_address", 7687 ) );

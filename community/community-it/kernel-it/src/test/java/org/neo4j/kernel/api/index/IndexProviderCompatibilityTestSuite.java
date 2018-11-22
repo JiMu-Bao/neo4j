@@ -21,6 +21,7 @@ package org.neo4j.kernel.api.index;
 
 import org.junit.Before;
 import org.junit.Rule;
+import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 import org.junit.runners.Suite;
 
@@ -42,6 +43,7 @@ import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
 import org.neo4j.test.rule.PageCacheAndDependenciesRule;
+import org.neo4j.test.rule.RandomRule;
 import org.neo4j.test.rule.fs.DefaultFileSystemRule;
 import org.neo4j.test.runner.ParameterizedSuiteRunner;
 import org.neo4j.values.storable.CoordinateReferenceSystem;
@@ -50,8 +52,10 @@ import org.neo4j.values.storable.DateValue;
 import org.neo4j.values.storable.DurationValue;
 import org.neo4j.values.storable.LocalDateTimeValue;
 import org.neo4j.values.storable.LocalTimeValue;
+import org.neo4j.values.storable.RandomValues;
 import org.neo4j.values.storable.TimeValue;
 import org.neo4j.values.storable.Value;
+import org.neo4j.values.storable.ValueType;
 import org.neo4j.values.storable.Values;
 
 @RunWith( ParameterizedSuiteRunner.class )
@@ -64,7 +68,10 @@ import org.neo4j.values.storable.Values;
         SimpleIndexAccessorCompatibility.Unique.class,
         CompositeIndexAccessorCompatibility.General.class,
         CompositeIndexAccessorCompatibility.Unique.class,
-        UniqueConstraintCompatibility.class
+        UniqueConstraintCompatibility.class,
+        SimpleRandomizedIndexAccessorCompatibility.class,
+        CompositeRandomizedIndexAccessorCompatibility.Exact.class,
+        CompositeRandomizedIndexAccessorCompatibility.Range.class
 } )
 public abstract class IndexProviderCompatibilityTestSuite
 {
@@ -88,10 +95,45 @@ public abstract class IndexProviderCompatibilityTestSuite
         return false;
     };
 
+    public boolean supportFullValuePrecisionForNumbers()
+    {
+        return true;
+    }
+
+    public ValueType[] supportedValueTypes()
+    {
+        if ( !supportsSpatial() )
+        {
+            return RandomValues.excluding(
+                    ValueType.CARTESIAN_POINT,
+                    ValueType.CARTESIAN_POINT_ARRAY,
+                    ValueType.CARTESIAN_POINT_3D,
+                    ValueType.CARTESIAN_POINT_3D_ARRAY,
+                    ValueType.GEOGRAPHIC_POINT,
+                    ValueType.GEOGRAPHIC_POINT_ARRAY,
+                    ValueType.GEOGRAPHIC_POINT_3D,
+                    ValueType.GEOGRAPHIC_POINT_3D_ARRAY );
+        }
+        return ValueType.values();
+    }
+
+    public void consistencyCheck( IndexAccessor accessor )
+    {
+        // no-op by default
+    }
+
+    public void consistencyCheck( IndexPopulator populator )
+    {
+        // no-op by default
+    }
+
     public abstract static class Compatibility
     {
+        private final PageCacheAndDependenciesRule pageCacheAndDependenciesRule;
+        final RandomRule random;
+
         @Rule
-        public final PageCacheAndDependenciesRule pageCacheAndDependenciesRule;
+        public RuleChain ruleChain;
 
         protected File graphDbDir;
         protected FileSystemAbstraction fs;
@@ -232,7 +274,9 @@ public abstract class IndexProviderCompatibilityTestSuite
                             Values.pointValue( CoordinateReferenceSystem.WGS84, 9.21, 9.65 )
                     ) );
 
-            pageCacheAndDependenciesRule = new PageCacheAndDependenciesRule( DefaultFileSystemRule::new, testSuite.getClass() );
+            pageCacheAndDependenciesRule = new PageCacheAndDependenciesRule().with( new DefaultFileSystemRule() ).with( testSuite.getClass() );
+            random = new RandomRule();
+            ruleChain = RuleChain.outerRule( pageCacheAndDependenciesRule ).around( random );
         }
 
         void withPopulator( IndexPopulator populator, ThrowingConsumer<IndexPopulator,Exception> runWithPopulator ) throws Exception
@@ -246,6 +290,10 @@ public abstract class IndexProviderCompatibilityTestSuite
             {
                 populator.create();
                 runWithPopulator.accept( populator );
+                if ( closeSuccessfully )
+                {
+                    testSuite.consistencyCheck( populator );
+                }
             }
             finally
             {

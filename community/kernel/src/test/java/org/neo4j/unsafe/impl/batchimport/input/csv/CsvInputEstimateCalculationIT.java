@@ -36,6 +36,8 @@ import java.util.List;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseFile;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.PageCursor;
 import org.neo4j.io.pagecache.tracing.PageCacheTracer;
@@ -43,17 +45,18 @@ import org.neo4j.io.pagecache.tracing.cursor.PageCursorTracerSupplier;
 import org.neo4j.io.pagecache.tracing.cursor.context.EmptyVersionContextSupplier;
 import org.neo4j.io.pagecache.tracing.cursor.context.VersionContextSupplier;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.logging.NullLogService;
 import org.neo4j.kernel.impl.pagecache.ConfiguringPageCacheFactory;
 import org.neo4j.kernel.impl.store.NeoStores;
 import org.neo4j.kernel.impl.store.PropertyValueRecordSizeCalculator;
 import org.neo4j.kernel.impl.store.StoreFactory;
-import org.neo4j.kernel.impl.store.StoreType;
 import org.neo4j.kernel.impl.store.format.RecordFormats;
 import org.neo4j.kernel.impl.store.id.DefaultIdGeneratorFactory;
 import org.neo4j.kernel.impl.store.record.PropertyRecord;
 import org.neo4j.logging.NullLog;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.logging.internal.NullLogService;
+import org.neo4j.scheduler.JobScheduler;
+import org.neo4j.scheduler.ThreadPoolJobScheduler;
 import org.neo4j.test.rule.RandomRule;
 import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.unsafe.impl.batchimport.AdditionalInitialIds;
@@ -79,7 +82,6 @@ import static org.junit.Assert.assertThat;
 import static org.neo4j.csv.reader.CharSeekers.charSeeker;
 import static org.neo4j.csv.reader.Readables.wrap;
 import static org.neo4j.helpers.collection.Iterables.count;
-import static org.neo4j.kernel.impl.store.MetaDataStore.DEFAULT_NAME;
 import static org.neo4j.kernel.impl.store.NoStoreHeader.NO_STORE_HEADER;
 import static org.neo4j.kernel.impl.store.format.standard.Standard.LATEST_RECORD_FORMATS;
 import static org.neo4j.kernel.impl.store.record.RecordLoad.CHECK;
@@ -112,27 +114,27 @@ public class CsvInputEstimateCalculationIT
                 parseInt( GraphDatabaseSettings.array_block_size.getDefaultValue() ), 0 ) );
 
         // when
-        File storeDir = directory.absolutePath();
+        DatabaseLayout databaseLayout = directory.databaseLayout();
         Config config = Config.defaults();
         FileSystemAbstraction fs = new DefaultFileSystemAbstraction();
-        new ParallelBatchImporter( storeDir, fs, null, Configuration.DEFAULT,
-                NullLogService.getInstance(), ExecutionMonitors.invisible(), AdditionalInitialIds.EMPTY, config,
-                format, NO_MONITOR ).doImport( input );
-
-        // then compare estimates with actual disk sizes
-        VersionContextSupplier contextSupplier = EmptyVersionContextSupplier.EMPTY;
-        try ( PageCache pageCache = new ConfiguringPageCacheFactory( fs, config, PageCacheTracer.NULL,
-                      PageCursorTracerSupplier.NULL, NullLog.getInstance(), contextSupplier )
-                .getOrCreatePageCache();
-              NeoStores stores = new StoreFactory( storeDir, config, new DefaultIdGeneratorFactory( fs ), pageCache, fs,
-                      NullLogProvider.getInstance(), contextSupplier ).openAllNeoStores() )
+        try ( JobScheduler jobScheduler = new ThreadPoolJobScheduler() )
         {
-            assertRoughlyEqual( estimates.numberOfNodes(), stores.getNodeStore().getNumberOfIdsInUse() );
-            assertRoughlyEqual( estimates.numberOfRelationships(), stores.getRelationshipStore().getNumberOfIdsInUse() );
-            assertRoughlyEqual( estimates.numberOfNodeProperties() + estimates.numberOfRelationshipProperties(),
-                    calculateNumberOfProperties( stores ) );
+            new ParallelBatchImporter( databaseLayout, fs, null, Configuration.DEFAULT, NullLogService.getInstance(), ExecutionMonitors.invisible(),
+                    AdditionalInitialIds.EMPTY, config, format, NO_MONITOR, jobScheduler ).doImport( input );
+
+            // then compare estimates with actual disk sizes
+            VersionContextSupplier contextSupplier = EmptyVersionContextSupplier.EMPTY;
+            try ( PageCache pageCache = new ConfiguringPageCacheFactory( fs, config, PageCacheTracer.NULL, PageCursorTracerSupplier.NULL, NullLog.getInstance(),
+                    contextSupplier, jobScheduler ).getOrCreatePageCache();
+                    NeoStores stores = new StoreFactory( databaseLayout, config, new DefaultIdGeneratorFactory( fs ), pageCache, fs,
+                            NullLogProvider.getInstance(), contextSupplier ).openAllNeoStores() )
+            {
+                assertRoughlyEqual( estimates.numberOfNodes(), stores.getNodeStore().getNumberOfIdsInUse() );
+                assertRoughlyEqual( estimates.numberOfRelationships(), stores.getRelationshipStore().getNumberOfIdsInUse() );
+                assertRoughlyEqual( estimates.numberOfNodeProperties() + estimates.numberOfRelationshipProperties(), calculateNumberOfProperties( stores ) );
+            }
+            assertRoughlyEqual( propertyStorageSize(), estimates.sizeOfNodeProperties() + estimates.sizeOfRelationshipProperties() );
         }
-        assertRoughlyEqual( propertyStorageSize(), estimates.sizeOfNodeProperties() + estimates.sizeOfRelationshipProperties() );
     }
 
     @Test
@@ -162,12 +164,12 @@ public class CsvInputEstimateCalculationIT
 
     private long propertyStorageSize()
     {
-        return sizeOf( StoreType.PROPERTY ) + sizeOf( StoreType.PROPERTY_ARRAY ) + sizeOf( StoreType.PROPERTY_STRING );
+        return sizeOf( DatabaseFile.PROPERTY_STORE ) + sizeOf( DatabaseFile.PROPERTY_ARRAY_STORE ) + sizeOf( DatabaseFile.PROPERTY_STRING_STORE );
     }
 
-    private long sizeOf( StoreType type )
+    private long sizeOf( DatabaseFile file )
     {
-        return new File( directory.absolutePath(), DEFAULT_NAME + type.getStoreName() ).length();
+        return directory.databaseLayout().file( file ).mapToLong( File::length ).sum();
     }
 
     private Input generateData() throws IOException
@@ -191,7 +193,7 @@ public class CsvInputEstimateCalculationIT
                 IdType.INTEGER, COMMAS, Collector.EMPTY, groups );
     }
 
-    private long calculateNumberOfProperties( NeoStores stores )
+    private static long calculateNumberOfProperties( NeoStores stores )
     {
         long count = 0;
         PropertyRecord record = stores.getPropertyStore().newRecord();
@@ -210,7 +212,7 @@ public class CsvInputEstimateCalculationIT
         return count;
     }
 
-    private void assertRoughlyEqual( long expected, long actual )
+    private static void assertRoughlyEqual( long expected, long actual )
     {
         long diff = abs( expected - actual );
         assertThat( expected / 10, greaterThan( diff ) );

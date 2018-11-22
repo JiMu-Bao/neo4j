@@ -21,53 +21,44 @@ package org.neo4j.kernel.impl.transaction.state.storeview;
 
 import org.apache.commons.lang3.ArrayUtils;
 
-import java.util.Arrays;
-import java.util.Iterator;
 import java.util.function.IntPredicate;
 import java.util.function.LongFunction;
 
-import org.neo4j.collection.PrimitiveLongCollections;
-import org.neo4j.collection.PrimitiveLongResourceIterator;
-import org.neo4j.helpers.collection.PrefetchingIterator;
+import org.neo4j.io.IOUtils;
 import org.neo4j.kernel.api.index.IndexEntryUpdate;
 import org.neo4j.kernel.impl.api.index.EntityUpdates;
 import org.neo4j.kernel.impl.api.index.MultipleIndexPopulator;
 import org.neo4j.kernel.impl.api.index.StoreScan;
 import org.neo4j.kernel.impl.locking.Lock;
-import org.neo4j.kernel.impl.store.PropertyStore;
-import org.neo4j.kernel.impl.store.RecordStore;
-import org.neo4j.kernel.impl.store.StoreIdIterator;
-import org.neo4j.kernel.impl.store.record.PrimitiveRecord;
-import org.neo4j.kernel.impl.store.record.PropertyBlock;
-import org.neo4j.kernel.impl.store.record.PropertyRecord;
-import org.neo4j.kernel.impl.store.record.Record;
+import org.neo4j.storageengine.api.StorageEntityScanCursor;
+import org.neo4j.storageengine.api.StoragePropertyCursor;
+import org.neo4j.storageengine.api.StorageReader;
 import org.neo4j.storageengine.api.schema.PopulationProgress;
 import org.neo4j.values.storable.Value;
 
-import static java.util.Collections.emptyIterator;
-import static org.neo4j.kernel.impl.store.record.RecordLoad.FORCE;
-
-public abstract class PropertyAwareEntityStoreScan<RECORD extends PrimitiveRecord, FAILURE extends Exception> implements StoreScan<FAILURE>
+public abstract class PropertyAwareEntityStoreScan<CURSOR extends StorageEntityScanCursor, FAILURE extends Exception> implements StoreScan<FAILURE>
 {
-    private final RecordStore<RECORD> store;
+    final CURSOR entityCursor;
+    private final StoragePropertyCursor propertyCursor;
+    private final StorageReader storageReader;
     private volatile boolean continueScanning;
     private long count;
     private long totalCount;
     private final IntPredicate propertyKeyIdFilter;
     private final LongFunction<Lock> lockFunction;
-    private final PropertyStore propertyStore;
-    private final RECORD record;
 
-    protected PropertyAwareEntityStoreScan( RecordStore<RECORD> store, PropertyStore propertyStore, IntPredicate propertyKeyIdFilter,
+    protected PropertyAwareEntityStoreScan( StorageReader storageReader, long totalEntityCount, IntPredicate propertyKeyIdFilter,
             LongFunction<Lock> lockFunction )
     {
-        this.store = store;
-        this.propertyStore = propertyStore;
-        this.record = store.newRecord();
-        this.totalCount = store.getHighId();
+        this.storageReader = storageReader;
+        this.entityCursor = allocateCursor( storageReader );
+        this.propertyCursor = storageReader.allocatePropertyCursor();
         this.propertyKeyIdFilter = propertyKeyIdFilter;
         this.lockFunction = lockFunction;
+        this.totalCount = totalEntityCount;
     }
+
+    protected abstract CURSOR allocateCursor( StorageReader storageReader );
 
     static boolean containsAnyEntityToken( int[] entityTokenFilter, long... entityTokens )
     {
@@ -81,17 +72,21 @@ public abstract class PropertyAwareEntityStoreScan<RECORD extends PrimitiveRecor
         return false;
     }
 
-    boolean hasRelevantProperty( RECORD record, EntityUpdates.Builder updates )
+    boolean hasRelevantProperty( CURSOR cursor, EntityUpdates.Builder updates )
     {
-        boolean hasRelevantProperty = false;
-
-        for ( PropertyBlock property : properties( record ) )
+        if ( !cursor.hasProperties() )
         {
-            int propertyKeyId = property.getKeyIndexId();
+            return false;
+        }
+        boolean hasRelevantProperty = false;
+        propertyCursor.init( cursor.propertiesReference() );
+        while ( propertyCursor.next() )
+        {
+            int propertyKeyId = propertyCursor.propertyKey();
             if ( propertyKeyIdFilter.test( propertyKeyId ) )
             {
                 // This relationship has a property of interest to us
-                Value value = valueOf( property );
+                Value value = propertyCursor.propertyValue();
                 // No need to validate values before passing them to the updater since the index implementation
                 // is allowed to fail in which ever way it wants to. The result of failure will be the same as
                 // a failed validation, i.e. population FAILED.
@@ -105,7 +100,8 @@ public abstract class PropertyAwareEntityStoreScan<RECORD extends PrimitiveRecor
     @Override
     public void run() throws FAILURE
     {
-        try ( PrimitiveLongResourceIterator entityIdIterator = getEntityIdIterator() )
+        entityCursor.scan();
+        try ( EntityIdIterator entityIdIterator = getEntityIdIterator() )
         {
             continueScanning = true;
             while ( continueScanning && entityIdIterator.hasNext() )
@@ -114,42 +110,43 @@ public abstract class PropertyAwareEntityStoreScan<RECORD extends PrimitiveRecor
                 try ( Lock ignored = lockFunction.apply( id ) )
                 {
                     count++;
-                    if ( store.getRecord( id, this.record, FORCE ).inUse() )
+                    if ( process( entityCursor ) )
                     {
-                        process( this.record );
+                        entityIdIterator.invalidateCache();
                     }
                 }
             }
         }
-    }
-
-    protected abstract void process( RECORD record ) throws FAILURE;
-
-    protected Value valueOf( PropertyBlock property )
-    {
-        // Make sure the value is loaded, even if it's of a "heavy" kind.
-        propertyStore.ensureHeavy( property );
-        return property.getType().value( property, propertyStore );
-    }
-
-    protected Iterable<PropertyBlock> properties( final RECORD relationship )
-    {
-        return () -> new PropertyBlockIterator( relationship );
+        finally
+        {
+            IOUtils.closeAllUnchecked( propertyCursor, entityCursor, storageReader );
+        }
     }
 
     @Override
-    public void stop()
-    {
-        continueScanning = false;
-    }
-
-    @Override
-    public void acceptUpdate( MultipleIndexPopulator.MultipleIndexUpdater updater, IndexEntryUpdate<?> update, long currentlyIndexedNodeId )
+    public void acceptUpdate( MultipleIndexPopulator.MultipleIndexUpdater updater, IndexEntryUpdate<?> update,
+            long currentlyIndexedNodeId )
     {
         if ( update.getEntityId() <= currentlyIndexedNodeId )
         {
             updater.process( update );
         }
+    }
+
+    /**
+     * Process the given {@code record}.
+     *
+     * @param cursor CURSOR with information to process.
+     * @return {@code true} if external updates have been applied such that the scan iterator needs to be 100% up to date with store,
+     * i.e. invalidate any caches if it has any.
+     * @throws FAILURE on failure.
+     */
+    protected abstract boolean process( CURSOR cursor ) throws FAILURE;
+
+    @Override
+    public void stop()
+    {
+        continueScanning = false;
     }
 
     @Override
@@ -164,44 +161,47 @@ public abstract class PropertyAwareEntityStoreScan<RECORD extends PrimitiveRecor
         return PopulationProgress.DONE;
     }
 
-    protected PrimitiveLongResourceIterator getEntityIdIterator()
+    protected EntityIdIterator getEntityIdIterator()
     {
-        return PrimitiveLongCollections.resourceIterator( new StoreIdIterator( store ), null );
-    }
-
-    protected class PropertyBlockIterator extends PrefetchingIterator<PropertyBlock>
-    {
-        private final Iterator<PropertyRecord> records;
-        private Iterator<PropertyBlock> blocks = emptyIterator();
-
-        PropertyBlockIterator( RECORD record )
+        return new EntityIdIterator()
         {
-            long firstPropertyId = record.getNextProp();
-            if ( firstPropertyId == Record.NO_NEXT_PROPERTY.intValue() )
-            {
-                records = emptyIterator();
-            }
-            else
-            {
-                records = propertyStore.getPropertyRecordChain( firstPropertyId ).iterator();
-            }
-        }
+            private boolean hasSeenNext;
+            private boolean hasNext;
 
-        @Override
-        protected PropertyBlock fetchNextOrNull()
-        {
-            for ( ; ; )
+            @Override
+            public void invalidateCache()
             {
-                if ( blocks.hasNext() )
-                {
-                    return blocks.next();
-                }
-                if ( !records.hasNext() )
-                {
-                    return null;
-                }
-                blocks = records.next().iterator();
+                // Nothing to invalidate, we're reading directly from the store
             }
-        }
+
+            @Override
+            public long next()
+            {
+                if ( !hasNext() )
+                {
+                    throw new IllegalStateException();
+                }
+                hasSeenNext = false;
+                hasNext = false;
+                return entityCursor.entityReference();
+            }
+
+            @Override
+            public boolean hasNext()
+            {
+                if ( !hasSeenNext )
+                {
+                     hasNext = entityCursor.next();
+                     hasSeenNext = true;
+                }
+                return hasNext;
+            }
+
+            @Override
+            public void close()
+            {
+                // Nothing to close
+            }
+        };
     }
 }

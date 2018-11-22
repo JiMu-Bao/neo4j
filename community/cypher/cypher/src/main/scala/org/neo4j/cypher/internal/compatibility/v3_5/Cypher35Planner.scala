@@ -34,8 +34,8 @@ import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.idp._
 import org.neo4j.cypher.internal.compiler.v3_5.planner.logical.{CachedMetricsFactory, SimpleMetricsFactory}
 import org.neo4j.cypher.internal.planner.v3_5.spi.{CostBasedPlannerName, DPPlannerName, IDPPlannerName, PlanContext}
 import org.neo4j.cypher.internal.runtime.interpreted._
-import org.neo4j.graphdb.Notification
 import org.neo4j.helpers.collection.Pair
+import org.neo4j.kernel.impl.api.SchemaStateKey
 import org.neo4j.kernel.impl.query.TransactionalContext
 import org.neo4j.kernel.monitoring.{Monitors => KernelMonitors}
 import org.neo4j.logging.Log
@@ -103,25 +103,25 @@ case class Cypher35Planner(config: CypherPlannerConfiguration,
         IDPQueryGraphSolver(singleComponentPlanner, cartesianProductsOrValueJoins, monitor)
     }
 
-  private def checkForSchemaChanges(planContext: PlanContext): Unit =
-    planContext.getOrCreateFromSchemaState(this, planCache.clear())
+  private val schemaStateKey = SchemaStateKey.newKey()
+  private def checkForSchemaChanges(tcw: TransactionalContextWrapper): Unit =
+    tcw.getOrCreateFromSchemaState(schemaStateKey, planCache.clear())
 
   override def parseAndPlan(preParsedQuery: PreParsedQuery,
                             tracer: CompilationPhaseTracer,
-                            preParsingNotifications: Set[Notification],
                             transactionalContext: TransactionalContext,
                             params: MapValue
                            ): LogicalPlanResult = {
 
-    val notificationLogger = new RecordingNotificationLogger(Some(preParsedQuery.offset))
-
     runSafely {
+      val notificationLogger = new RecordingNotificationLogger(Some(preParsedQuery.offset))
       val syntacticQuery =
         getOrParse(preParsedQuery, new Parser3_5(planner, notificationLogger, preParsedQuery.offset, tracer))
 
+      val transactionalContextWrapper = TransactionalContextWrapper(transactionalContext)
       // Context used for db communication during planning
       val planContext = new ExceptionTranslatingPlanContext(TransactionBoundPlanContext(
-        TransactionalContextWrapper(transactionalContext), notificationLogger))
+        transactionalContextWrapper, notificationLogger))
 
       // Context used to create logical plans
       val logicalPlanIdGen = new SequentialIdGen()
@@ -133,20 +133,20 @@ case class Cypher35Planner(config: CypherPlannerConfiguration,
                                           Some(preParsedQuery.offset),
                                           monitors,
                                           CachedMetricsFactory(SimpleMetricsFactory),
-                                          createQueryGraphSolver,
+                                          createQueryGraphSolver(),
                                           config,
                                           maybeUpdateStrategy.getOrElse(defaultUpdateStrategy),
                                           clock,
                                           logicalPlanIdGen,
-                                          simpleExpressionEvaluator)
+                                          simpleExpressionEvaluator(PlanningQueryContext(transactionalContext)))
 
       // Prepare query for caching
       val preparedQuery = planner.normalizeQuery(syntacticQuery, context)
       val queryParamNames: Seq[String] = preparedQuery.statement().findByAllClass[Parameter].map(x => x.name)
 
-      checkForSchemaChanges(planContext)
+      checkForSchemaChanges(transactionalContextWrapper)
 
-      // If the query is not cached we want to do the full planning + creating executable plan
+      // If the query is not cached we want to do the full planning
       def createPlan(): CacheableLogicalPlan = {
         val logicalPlanState = planner.planPreparedQuery(preparedQuery, context)
         notification.LogicalPlanNotifications
@@ -154,7 +154,7 @@ case class Cypher35Planner(config: CypherPlannerConfiguration,
           .foreach(notificationLogger.log)
 
         val reusabilityState = createReusabilityState(logicalPlanState, planContext)
-        CacheableLogicalPlan(logicalPlanState, reusabilityState)
+        CacheableLogicalPlan(logicalPlanState, reusabilityState, notificationLogger.notifications)
       }
 
       // Filter the parameters to retain only those that are actually used in the query
@@ -167,6 +167,7 @@ case class Cypher35Planner(config: CypherPlannerConfiguration,
           planCache.computeIfAbsentOrStale(Pair.of(syntacticQuery.statement(), QueryCache.extractParameterTypeMap(filteredParams)),
                                            transactionalContext,
                                            createPlan,
+                                           _ => None,
                                            syntacticQuery.queryText).executableQuery
         else
           createPlan()
@@ -176,7 +177,8 @@ case class Cypher35Planner(config: CypherPlannerConfiguration,
         queryParamNames,
         ValueConversion.asValues(preparedQuery.extractedParams()),
         cacheableLogicalPlan.reusability,
-        context)
+        context,
+        cacheableLogicalPlan.notifications)
     }
   }
 
@@ -184,7 +186,7 @@ case class Cypher35Planner(config: CypherPlannerConfiguration,
 }
 
 private[v3_5] class Parser3_5(planner: v3_5.CypherPlanner[PlannerContext],
-                              notificationLogger: RecordingNotificationLogger,
+                              notificationLogger: InternalNotificationLogger,
                               offset: InputPosition,
                               tracer: CompilationPhaseTracer
                              ) extends Parser[BaseState] {

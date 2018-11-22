@@ -24,7 +24,6 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -58,7 +57,7 @@ import static java.lang.Integer.parseInt;
 import static java.util.Arrays.asList;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertThat;
 import static org.neo4j.kernel.impl.store.RecordStore.getRecord;
 import static org.neo4j.kernel.impl.store.record.RecordLoad.NORMAL;
@@ -70,7 +69,6 @@ public class RelationshipGroupStoreTest
     public PageCacheRule pageCacheRule = new PageCacheRule( config().withInconsistentReads( false ) );
     @Rule
     public TestDirectory testDir = TestDirectory.testDirectory();
-    private File directory;
     private int defaultThreshold;
     private FileSystemAbstraction fs;
     private ImpermanentGraphDatabase db;
@@ -78,7 +76,6 @@ public class RelationshipGroupStoreTest
     @Before
     public void before()
     {
-        directory = testDir.databaseDir();
         fs = new DefaultFileSystemAbstraction();
         defaultThreshold = parseInt( GraphDatabaseSettings.dense_node_threshold.getDefaultValue() );
     }
@@ -170,7 +167,7 @@ public class RelationshipGroupStoreTest
         {
             customConfig.put( GraphDatabaseSettings.dense_node_threshold.name(), "" + customThreshold );
         }
-        return new StoreFactory( directory, Config.defaults( customConfig ), new DefaultIdGeneratorFactory( fs ), pageCache,
+        return new StoreFactory( testDir.databaseLayout(), Config.defaults( customConfig ), new DefaultIdGeneratorFactory( fs ), pageCache,
                 fs, NullLogProvider.getInstance(), EmptyVersionContextSupplier.EMPTY );
     }
 
@@ -266,7 +263,7 @@ public class RelationshipGroupStoreTest
 
         RecordStore<RelationshipGroupRecord> groupStore = neoStores.getRelationshipGroupStore();
         RelationshipGroupRecord groupRecord = getRecord( groupStore, group );
-        assertFalse( groupRecord.getNext() == -1 );
+        assertNotEquals( groupRecord.getNext(), -1 );
         assertRelationshipChain( neoStores.getRelationshipStore(), node, groupRecord.getFirstOut(), rel1.getId(),
                 rel2.getId(), rel3.getId() );
 
@@ -301,7 +298,7 @@ public class RelationshipGroupStoreTest
 
         RecordStore<RelationshipGroupRecord> groupStore = neoStores.getRelationshipGroupStore();
         RelationshipGroupRecord groupRecord = getRecord( groupStore, group );
-        assertFalse( groupRecord.getNext() == -1 );
+        assertNotEquals( groupRecord.getNext(), -1 );
         RelationshipGroupRecord otherGroupRecord = groupStore.getRecord( groupRecord.getNext(), groupStore.newRecord(),
                 NORMAL );
         assertEquals( -1, otherGroupRecord.getNext() );

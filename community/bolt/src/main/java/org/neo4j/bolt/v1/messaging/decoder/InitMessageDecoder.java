@@ -28,6 +28,7 @@ import org.neo4j.bolt.messaging.RequestMessage;
 import org.neo4j.bolt.messaging.RequestMessageDecoder;
 import org.neo4j.bolt.runtime.BoltResponseHandler;
 import org.neo4j.bolt.v1.messaging.request.InitMessage;
+import org.neo4j.kernel.api.security.AuthToken;
 import org.neo4j.values.virtual.MapValue;
 
 public class InitMessageDecoder implements RequestMessageDecoder
@@ -55,16 +56,22 @@ public class InitMessageDecoder implements RequestMessageDecoder
     public RequestMessage decode( Neo4jPack.Unpacker unpacker ) throws IOException
     {
         String userAgent = unpacker.unpackString();
-        Map<String,Object> authToken = readAuthToken( unpacker );
+        Map<String,Object> authToken = readMetaDataMap( unpacker );
         return new InitMessage( userAgent, authToken );
     }
 
-    private static Map<String,Object> readAuthToken( Neo4jPack.Unpacker unpacker ) throws IOException
+    public static Map<String,Object> readMetaDataMap( Neo4jPack.Unpacker unpacker ) throws IOException
     {
-        MapValue authTokenValue = unpacker.unpackMap();
+        MapValue metaDataMapValue = unpacker.unpackMap();
         PrimitiveOnlyValueWriter writer = new PrimitiveOnlyValueWriter();
-        Map<String,Object> tokenMap = new HashMap<>( authTokenValue.size() );
-        authTokenValue.foreach( ( key, value ) -> tokenMap.put( key, writer.valueAsObject( value ) ) );
-        return tokenMap;
+        Map<String,Object> metaDataMap = new HashMap<>( metaDataMapValue.size() );
+        metaDataMapValue.foreach( ( key, value ) ->
+        {
+            Object convertedValue = AuthToken.containsSensitiveInformation( key ) ?
+                                    writer.sensitiveValueAsObject( value, key ) :
+                                    writer.valueAsObject( value );
+            metaDataMap.put( key, convertedValue );
+        } );
+        return metaDataMap;
     }
 }

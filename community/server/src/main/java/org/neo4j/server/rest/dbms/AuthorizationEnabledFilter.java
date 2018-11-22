@@ -45,6 +45,7 @@ import org.neo4j.logging.Log;
 import org.neo4j.logging.LogProvider;
 import org.neo4j.server.web.JettyHttpConnection;
 import org.neo4j.server.web.XForwardUtil;
+import org.neo4j.string.UTF8;
 
 import static java.lang.String.format;
 import static java.util.Collections.singletonList;
@@ -79,6 +80,10 @@ public class AuthorizationEnabledFilter extends AuthorizationFilter
         final HttpServletRequest request = (HttpServletRequest) servletRequest;
         final HttpServletResponse response = (HttpServletResponse) servletResponse;
 
+        String userAgent = request.getHeader( HttpHeaders.USER_AGENT );
+        // username is only known after authentication, make connection aware of the user-agent
+        JettyHttpConnection.updateUserForCurrentConnection( null, userAgent );
+
         final String path = request.getContextPath() + ( request.getPathInfo() == null ? "" : request.getPathInfo() );
 
         if ( request.getMethod().equals( "OPTIONS" ) || whitelisted( path ) )
@@ -109,7 +114,8 @@ public class AuthorizationEnabledFilter extends AuthorizationFilter
         try
         {
             LoginContext securityContext = authenticate( username, password );
-            JettyHttpConnection.updateUserForCurrentConnection( username );
+            // username is now known, make connection aware of both username and user-agent
+            JettyHttpConnection.updateUserForCurrentConnection( username, userAgent );
 
             switch ( securityContext.subject().getAuthenticationResult() )
             {
@@ -156,7 +162,7 @@ public class AuthorizationEnabledFilter extends AuthorizationFilter
     private LoginContext authenticate( String username, String password ) throws InvalidAuthTokenException
     {
         AuthManager authManager = authManagerSupplier.get();
-        Map<String,Object> authToken = newBasicAuthToken( username, password );
+        Map<String,Object> authToken = newBasicAuthToken( username, password != null ? UTF8.encode( password ) : null );
         return authManager.login( authToken );
     }
 

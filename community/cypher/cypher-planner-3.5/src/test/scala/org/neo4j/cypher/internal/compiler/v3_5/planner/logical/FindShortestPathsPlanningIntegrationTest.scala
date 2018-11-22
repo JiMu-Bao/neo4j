@@ -43,6 +43,27 @@ class FindShortestPathsPlanningIntegrationTest extends CypherFunSuite with Logic
     )
   }
 
+  test("find shortest path with length predicate and WITH should not plan fallback") {
+
+    val lengthOfP = FunctionInvocation(Namespace(List()) _, FunctionName("length") _, distinct = false, Vector(Variable("p") _)) _
+
+    planFor("MATCH (a), (b), p = shortestPath((a)-[r]->(b)) WITH p WHERE length(p) > 1 RETURN p")._2 should equal(
+      Selection(Ands(Set(GreaterThan(lengthOfP, SignedDecimalIntegerLiteral("1") _) _)) _,
+        FindShortestPaths(
+          CartesianProduct(
+            AllNodesScan("a", Set.empty),
+            AllNodesScan("b", Set.empty)
+          ),
+          ShortestPathPattern(
+            Some("p"),
+            PatternRelationship("r", ("a", "b"), SemanticDirection.OUTGOING, Seq.empty, SimplePatternLength),
+            single = true
+          )(null)
+        )
+      )
+    )
+  }
+
   test("finds all shortest paths") {
     planFor("MATCH (a), (b), allShortestPaths((a)-[r]->(b)) RETURN b")._2 should equal(
       FindShortestPaths(
@@ -63,11 +84,11 @@ class FindShortestPathsPlanningIntegrationTest extends CypherFunSuite with Logic
     val result = (new given {
       cardinality = mapCardinality {
         // node label scan
-        case RegularPlannerQuery(queryGraph, _, _) if queryGraph.patternNodes.size == 1 && queryGraph.selections.predicates.size == 1 => 100.0
+        case RegularPlannerQuery(queryGraph, _, _, _) if queryGraph.patternNodes.size == 1 && queryGraph.selections.predicates.size == 1 => 100.0
         // all node scan
-        case RegularPlannerQuery(queryGraph, _, _) if queryGraph.patternNodes.size == 1 && queryGraph.selections.predicates.isEmpty => 10000.0
+        case RegularPlannerQuery(queryGraph, _, _, _) if queryGraph.patternNodes.size == 1 && queryGraph.selections.predicates.isEmpty => 10000.0
         // expand
-        case RegularPlannerQuery(queryGraph, _, _) if queryGraph.patternRelationships.size == 1 => 100.0
+        case RegularPlannerQuery(queryGraph, _, _, _) if queryGraph.patternRelationships.size == 1 => 100.0
         case _                             => Double.MaxValue
       }
     } getLogicalPlanFor "MATCH (a:X)<-[r1]-(b)-[r2]->(c:X), p = shortestPath((a)-[r]->(c)) RETURN p")._2

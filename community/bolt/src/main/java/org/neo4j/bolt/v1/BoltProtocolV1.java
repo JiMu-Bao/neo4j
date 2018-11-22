@@ -36,7 +36,7 @@ import org.neo4j.bolt.transport.pipeline.MessageDecoder;
 import org.neo4j.bolt.v1.messaging.BoltRequestMessageReaderV1;
 import org.neo4j.bolt.v1.messaging.BoltResponseMessageWriterV1;
 import org.neo4j.bolt.v1.messaging.Neo4jPackV1;
-import org.neo4j.kernel.impl.logging.LogService;
+import org.neo4j.logging.internal.LogService;
 
 /**
  * Bolt protocol V1. It hosts all the components that are specific to BoltV1
@@ -75,7 +75,7 @@ public class BoltProtocolV1 implements BoltProtocol
         pipeline.addLast( new ChunkDecoder() );
         pipeline.addLast( new MessageAccumulator() );
         pipeline.addLast( new MessageDecoder( neo4jPack, messageReader, logging ) );
-        pipeline.addLast( new HouseKeeper( connection, logging ) );
+        pipeline.addLast( new HouseKeeper( connection, logging.getInternalLog( HouseKeeper.class ) ) );
     }
 
     protected Neo4jPack createPack()

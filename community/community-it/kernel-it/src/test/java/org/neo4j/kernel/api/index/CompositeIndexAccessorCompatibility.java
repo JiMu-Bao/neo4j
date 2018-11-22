@@ -19,25 +19,46 @@
  */
 package org.neo4j.kernel.api.index;
 
+import org.apache.commons.lang3.ArrayUtils;
 import org.junit.Assume;
 import org.junit.Ignore;
 import org.junit.Test;
 
+import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
+import org.neo4j.internal.kernel.api.IndexOrder;
 import org.neo4j.internal.kernel.api.IndexQuery;
 import org.neo4j.internal.kernel.api.schema.SchemaDescriptor;
 import org.neo4j.kernel.api.schema.index.TestIndexDescriptorFactory;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
+import org.neo4j.storageengine.api.schema.SimpleNodeValueClient;
 import org.neo4j.values.storable.ArrayValue;
 import org.neo4j.values.storable.BooleanValue;
 import org.neo4j.values.storable.CoordinateReferenceSystem;
 import org.neo4j.values.storable.DateTimeValue;
+import org.neo4j.values.storable.DateValue;
+import org.neo4j.values.storable.LocalDateTimeValue;
+import org.neo4j.values.storable.LocalTimeValue;
+import org.neo4j.values.storable.PointArray;
 import org.neo4j.values.storable.PointValue;
+import org.neo4j.values.storable.TimeValue;
 import org.neo4j.values.storable.Value;
 import org.neo4j.values.storable.ValueGroup;
+import org.neo4j.values.storable.ValueTuple;
+import org.neo4j.values.storable.ValueType;
 import org.neo4j.values.storable.Values;
 
 import static java.time.LocalDate.ofEpochDay;
@@ -45,14 +66,23 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.EMPTY_LIST;
 import static java.util.Collections.singletonList;
 import static org.hamcrest.Matchers.equalTo;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
+import static org.neo4j.helpers.collection.Iterables.single;
 import static org.neo4j.internal.kernel.api.IndexQuery.exists;
 import static org.neo4j.internal.kernel.api.IndexQuery.range;
 import static org.neo4j.kernel.api.index.IndexQueryHelper.exact;
+import static org.neo4j.values.storable.CoordinateReferenceSystem.Cartesian;
+import static org.neo4j.values.storable.CoordinateReferenceSystem.WGS84;
 import static org.neo4j.values.storable.DateTimeValue.datetime;
 import static org.neo4j.values.storable.DateValue.epochDate;
+import static org.neo4j.values.storable.ValueGroup.GEOMETRY;
+import static org.neo4j.values.storable.ValueGroup.GEOMETRY_ARRAY;
 import static org.neo4j.values.storable.Values.booleanArray;
+import static org.neo4j.values.storable.Values.intValue;
 import static org.neo4j.values.storable.Values.longArray;
+import static org.neo4j.values.storable.Values.pointArray;
+import static org.neo4j.values.storable.Values.pointValue;
 import static org.neo4j.values.storable.Values.stringArray;
 
 @Ignore( "Not a test. This is a compatibility suite that provides test cases for verifying" +
@@ -140,10 +170,10 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     {
         Assume.assumeTrue( "Assume support for spatial", testSuite.supportsSpatial() );
 
-        PointValue gps = Values.pointValue( CoordinateReferenceSystem.WGS84, 12.6, 56.7 );
-        PointValue car = Values.pointValue( CoordinateReferenceSystem.Cartesian, 12.6, 56.7 );
-        PointValue gps3d = Values.pointValue( CoordinateReferenceSystem.WGS84_3D, 12.6, 56.7, 100.0 );
-        PointValue car3d = Values.pointValue( CoordinateReferenceSystem.Cartesian_3D, 12.6, 56.7, 100.0 );
+        PointValue gps = pointValue( WGS84, 12.6, 56.7 );
+        PointValue car = pointValue( Cartesian, 12.6, 56.7 );
+        PointValue gps3d = pointValue( CoordinateReferenceSystem.WGS84_3D, 12.6, 56.7, 100.0 );
+        PointValue car3d = pointValue( CoordinateReferenceSystem.Cartesian_3D, 12.6, 56.7, 100.0 );
 
         updateAndCommit( asList(
                 add( 1L, descriptor.schema(), gps, gps ),
@@ -168,7 +198,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekExactWithRangeByString() throws Exception
     {
-        testIndexSeekExactWithRange( ValueGroup.TEXT, Values.of( "a" ), Values.of( "b" ),
+        testIndexSeekExactWithRange( Values.of( "a" ), Values.of( "b" ),
                 Values.of( "Anabelle" ),
                 Values.of( "Anna" ),
                 Values.of( "Bob" ),
@@ -179,7 +209,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekExactWithRangeByNumber() throws Exception
     {
-        testIndexSeekExactWithRange( ValueGroup.NUMBER, Values.of( 303 ), Values.of( 101 ),
+        testIndexSeekExactWithRange( Values.of( 303 ), Values.of( 101 ),
                 Values.of( 111 ),
                 Values.of( 222 ),
                 Values.of( 333 ),
@@ -190,7 +220,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekExactWithRangeByTemporal() throws Exception
     {
-        testIndexSeekExactWithRange( ValueGroup.DATE, epochDate( 303 ), epochDate( 101 ),
+        testIndexSeekExactWithRange( epochDate( 303 ), epochDate( 101 ),
                 epochDate( 111 ),
                 epochDate( 222 ),
                 epochDate( 333 ),
@@ -203,7 +233,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     {
         Assume.assumeTrue( "Assume support for boolean range queries", testSuite.supportsBooleanRangeQueries() );
 
-        testIndexSeekExactWithRangeByBooleanType( ValueGroup.BOOLEAN_ARRAY, BooleanValue.TRUE, BooleanValue.FALSE,
+        testIndexSeekExactWithRangeByBooleanType( BooleanValue.TRUE, BooleanValue.FALSE,
                 BooleanValue.FALSE,
                 BooleanValue.TRUE );
     }
@@ -211,7 +241,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekExactWithRangeByStringArray() throws Exception
     {
-        testIndexSeekExactWithRange( ValueGroup.TEXT_ARRAY, stringArray( "a", "c" ), stringArray( "b", "c" ),
+        testIndexSeekExactWithRange( stringArray( "a", "c" ), stringArray( "b", "c" ),
                 stringArray( "Anabelle", "c" ),
                 stringArray( "Anna", "c" ),
                 stringArray( "Bob", "c" ),
@@ -223,7 +253,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekExactWithRangeByNumberArray() throws Exception
     {
-        testIndexSeekExactWithRange( ValueGroup.NUMBER_ARRAY, longArray( new long[]{333, 9000} ), longArray( new long[]{101, 900} ),
+        testIndexSeekExactWithRange( longArray( new long[]{333, 9000} ), longArray( new long[]{101, 900} ),
                 longArray( new long[]{111, 900} ),
                 longArray( new long[]{222, 900} ),
                 longArray( new long[]{333, 900} ),
@@ -235,7 +265,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekExactWithRangeByBooleanArray() throws Exception
     {
-        testIndexSeekExactWithRange( ValueGroup.BOOLEAN_ARRAY, booleanArray( new boolean[]{true, true} ), booleanArray( new boolean[]{false, false} ),
+        testIndexSeekExactWithRange( booleanArray( new boolean[]{true, true} ), booleanArray( new boolean[]{false, false} ),
                 booleanArray( new boolean[]{false, false} ),
                 booleanArray( new boolean[]{false, true} ),
                 booleanArray( new boolean[]{true, false} ),
@@ -247,7 +277,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekExactWithRangeByTemporalArray() throws Exception
     {
-        testIndexSeekExactWithRange( ValueGroup.DATE_ARRAY, dateArray( 303, 900 ), dateArray( 101, 900 ),
+        testIndexSeekExactWithRange( dateArray( 303, 900 ), dateArray( 101, 900 ),
                 dateArray( 111, 900 ),
                 dateArray( 222, 900 ),
                 dateArray( 333, 900 ),
@@ -255,10 +285,18 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
                 dateArray( 555, 900 ) );
     }
 
-    // TODO testIndexQuery_Exact_Range_Array (spatial)
-    // TODO testIndexQuery_Exact_Range_Spatial
+    @Test
+    public void testIndexSeekExactWithRangeBySpatial() throws Exception
+    {
+        testIndexSeekExactWithRange( intValue( 100 ), intValue( 10 ),
+                pointValue( WGS84, -10D, -10D ),
+                pointValue( WGS84, -1D, -1D ),
+                pointValue( WGS84, 0D, 0D ),
+                pointValue( WGS84, 1D, 1D ),
+                pointValue( WGS84, 10D, 10D ) );
+    }
 
-    private void testIndexSeekExactWithRange( ValueGroup valueGroup, Value base1, Value base2, Value obj1, Value obj2, Value obj3, Value obj4, Value obj5 )
+    private void testIndexSeekExactWithRange( Value base1, Value base2, Value obj1, Value obj2, Value obj3, Value obj4, Value obj5 )
             throws Exception
     {
         Assume.assumeTrue( "Assume support for granular composite queries", testSuite.supportsGranularCompositeQueries() );
@@ -281,7 +319,6 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         assertThat( query( exact( 0, base1 ), range( 1, obj5, false, obj2, true ) ), equalTo( EMPTY_LIST ) );
         assertThat( query( exact( 0, base1 ), range( 1, null, false, obj3, false ) ), equalTo( asList( 1L, 2L ) ) );
         assertThat( query( exact( 0, base1 ), range( 1, null, true, obj3, true ) ), equalTo( asList( 1L, 2L, 3L ) ) );
-        assertThat( query( exact( 0, base1 ), range( 1, valueGroup ) ), equalTo( asList( 1L, 2L, 3L, 4L, 5L ) ) );
         assertThat( query( exact( 0, base1 ), range( 1, obj1, false, obj2, true ) ), equalTo( singletonList( 2L ) ) );
         assertThat( query( exact( 0, base1 ), range( 1, obj1, false, obj3, false ) ), equalTo( singletonList( 2L ) ) );
         assertThat( query( exact( 0, base2 ), range( 1, obj2, true, obj4, false ) ), equalTo( asList( 7L, 8L ) ) );
@@ -290,12 +327,38 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         assertThat( query( exact( 0, base2 ), range( 1, obj5, false, obj2, true ) ), equalTo( EMPTY_LIST ) );
         assertThat( query( exact( 0, base2 ), range( 1, null, false, obj3, false ) ), equalTo( asList( 6L, 7L ) ) );
         assertThat( query( exact( 0, base2 ), range( 1, null, true, obj3, true ) ), equalTo( asList( 6L, 7L, 8L ) ) );
-        assertThat( query( exact( 0, base2 ), range( 1, valueGroup ) ), equalTo( asList( 6L, 7L, 8L, 9L, 10L ) ) );
         assertThat( query( exact( 0, base2 ), range( 1, obj1, false, obj2, true ) ), equalTo( singletonList( 7L ) ) );
         assertThat( query( exact( 0, base2 ), range( 1, obj1, false, obj3, false ) ), equalTo( singletonList( 7L ) ) );
+
+        ValueGroup valueGroup = obj1.valueGroup();
+        if ( valueGroup != GEOMETRY && valueGroup != GEOMETRY_ARRAY )
+        {
+            assertThat( query( exact( 0, base1 ), range( 1, valueGroup ) ), equalTo( asList( 1L, 2L, 3L, 4L, 5L ) ) );
+            assertThat( query( exact( 0, base2 ), range( 1, valueGroup ) ), equalTo( asList( 6L, 7L, 8L, 9L, 10L ) ) );
+        }
+        else
+        {
+            CoordinateReferenceSystem crs = getCrs( obj1 );
+            assertThat( query( exact( 0, base1 ), range( 1, crs ) ), equalTo( asList( 1L, 2L, 3L, 4L, 5L ) ) );
+            assertThat( query( exact( 0, base2 ), range( 1, crs ) ), equalTo( asList( 6L, 7L, 8L, 9L, 10L ) ) );
+        }
     }
 
-    private void testIndexSeekExactWithRangeByBooleanType( ValueGroup valueGroup, Value base1, Value base2, Value obj1, Value obj2 ) throws Exception
+    private CoordinateReferenceSystem getCrs( Value value )
+    {
+        if ( Values.isGeometryValue( value ) )
+        {
+            return ((PointValue) value).getCoordinateReferenceSystem();
+        }
+        else if ( Values.isGeometryArray( value ) )
+        {
+            PointArray array = (PointArray) value;
+            return array.pointValue( 0 ).getCoordinateReferenceSystem();
+        }
+        throw new IllegalArgumentException( "Expected some geometry value to get CRS from, but got " + value );
+    }
+
+    private void testIndexSeekExactWithRangeByBooleanType( Value base1, Value base2, Value obj1, Value obj2 ) throws Exception
     {
         updateAndCommit( asList(
                 add( 1L, descriptor.schema(), base1, obj1 ),
@@ -309,7 +372,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         assertThat( query( exact( 0, base1 ), range( 1, obj1, false, obj2, false ) ), equalTo( EMPTY_LIST ) );
         assertThat( query( exact( 0, base1 ), range( 1, null, true, obj2, true ) ), equalTo( asList( 1L, 2L ) ) );
         assertThat( query( exact( 0, base1 ), range( 1, obj1, true, null, true ) ), equalTo( asList( 1L, 2L ) ) );
-        assertThat( query( exact( 0, base1 ), range( 1, valueGroup ) ), equalTo( asList( 1L, 2L ) ) );
+        assertThat( query( exact( 0, base1 ), range( 1, obj1.valueGroup() ) ), equalTo( asList( 1L, 2L ) ) );
         assertThat( query( exact( 0, base1 ), range( 1, obj2, true, obj1, true ) ), equalTo( EMPTY_LIST ) );
         assertThat( query( exact( 0, base2 ), range( 1, obj1, true, obj2, true ) ), equalTo( asList( 3L, 4L ) ) );
         assertThat( query( exact( 0, base2 ), range( 1, obj1, false, obj2, true ) ), equalTo( singletonList( 4L ) ) );
@@ -317,7 +380,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         assertThat( query( exact( 0, base2 ), range( 1, obj1, false, obj2, false ) ), equalTo( EMPTY_LIST ) );
         assertThat( query( exact( 0, base2 ), range( 1, null, true, obj2, true ) ), equalTo( asList( 3L, 4L ) ) );
         assertThat( query( exact( 0, base2 ), range( 1, obj1, true, null, true ) ), equalTo( asList( 3L, 4L ) ) );
-        assertThat( query( exact( 0, base2 ), range( 1, valueGroup ) ), equalTo( asList( 3L, 4L ) ) );
+        assertThat( query( exact( 0, base2 ), range( 1, obj1.valueGroup() ) ), equalTo( asList( 3L, 4L ) ) );
         assertThat( query( exact( 0, base2 ), range( 1, obj2, true, obj1, true ) ), equalTo( EMPTY_LIST ) );
     }
 
@@ -424,8 +487,19 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         testIndexSeekExactWithExists( dateArray( 303, 900 ), dateArray( 101, 900 ) );
     }
 
-    // TODO testIndexSeekExactWithExistsByArray (spatial)
-    // TODO testIndexSeekExactWithExistsBySpatial
+    @Test
+    public void testIndexSeekExactWithExistsBySpatial() throws Exception
+    {
+        testIndexSeekExactWithExists( pointValue( WGS84, 100D, 100D ), pointValue( WGS84, 0D, 0D ) );
+    }
+
+    @Test
+    public void testIndexSeekExactWithExistsBySpatialArray() throws Exception
+    {
+        testIndexSeekExactWithExists(
+                pointArray( new PointValue[] {pointValue( Cartesian, 100D, 100D ), pointValue( Cartesian, 101D, 101D )} ),
+                pointArray( new PointValue[] {pointValue( Cartesian, 0D, 0D ), pointValue( Cartesian, 1D, 1D )} ) );
+    }
 
     private void testIndexSeekExactWithExists( Object a, Object b ) throws Exception
     {
@@ -449,13 +523,13 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekRangeWithExistsByString() throws Exception
     {
-        testIndexSeekRangeWithExists( ValueGroup.TEXT, "Anabelle", "Anna", "Bob", "Harriet", "William" );
+        testIndexSeekRangeWithExists( "Anabelle", "Anna", "Bob", "Harriet", "William" );
     }
 
     @Test
     public void testIndexSeekRangeWithExistsByNumber() throws Exception
     {
-        testIndexSeekRangeWithExists( ValueGroup.NUMBER, -5, 0, 5.5, 10.0, 100.0 );
+        testIndexSeekRangeWithExists( -5, 0, 5.5, 10.0, 100.0 );
     }
 
     @Test
@@ -466,7 +540,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         DateTimeValue d3 = datetime( 10000, 100, ZoneId.of( "+01:00" ) );
         DateTimeValue d4 = datetime( 10000, 100, ZoneId.of( "Europe/Stockholm" ) );
         DateTimeValue d5 = datetime( 10000, 100, ZoneId.of( "+03:00" ) );
-        testIndexSeekRangeWithExists( ValueGroup.DATE, d1, d2, d3, d4, d5  );
+        testIndexSeekRangeWithExists( d1, d2, d3, d4, d5  );
     }
 
     @Test
@@ -491,7 +565,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekRangeWithExistsByStringArray() throws Exception
     {
-        testIndexSeekRangeWithExists( ValueGroup.TEXT_ARRAY,
+        testIndexSeekRangeWithExists(
                 new String[]{"Anabelle", "Anabelle"},
                 new String[]{"Anabelle", "Anablo"},
                 new String[]{"Anna", "Anabelle"},
@@ -502,7 +576,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekRangeWithExistsByNumberArray() throws Exception
     {
-        testIndexSeekRangeWithExists( ValueGroup.NUMBER_ARRAY,
+        testIndexSeekRangeWithExists(
                 new long[]{303, 303},
                 new long[]{303, 404},
                 new long[]{600, 303},
@@ -513,7 +587,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekRangeWithExistsByBooleanArray() throws Exception
     {
-        testIndexSeekRangeWithExists( ValueGroup.NUMBER_ARRAY,
+        testIndexSeekRangeWithExists(
                 new boolean[]{false, false},
                 new boolean[]{false, true},
                 new boolean[]{true, false},
@@ -524,7 +598,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
     @Test
     public void testIndexSeekRangeWithExistsByTemporalArray() throws Exception
     {
-        testIndexSeekRangeWithExists( ValueGroup.NUMBER_ARRAY,
+        testIndexSeekRangeWithExists(
                 dateArray( 303, 303 ),
                 dateArray( 303, 404 ),
                 dateArray( 404, 303 ),
@@ -532,15 +606,65 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
                 dateArray( 404, 404, 303 ) );
     }
 
-    // TODO testIndexSeekRangeWithExistsByArray (spatial
-    // TODO testIndexSeekRangeWithExistsBySpatial
-
-    private void testIndexSeekRangeWithExists( ValueGroup valueGroup, Object obj1, Object obj2, Object obj3, Object obj4, Object obj5 ) throws Exception
+    @Test
+    public void testIndexSeekRangeWithExistsBySpatial() throws Exception
     {
-        testIndexSeekRangeWithExists( valueGroup, Values.of( obj1 ), Values.of( obj2 ), Values.of( obj3 ), Values.of( obj4 ), Values.of( obj5 ) );
+        testIndexSeekRangeWithExists(
+                pointValue( Cartesian, 0D, 0D ),
+                pointValue( Cartesian, 1D, 1D ),
+                pointValue( Cartesian, 2D, 2D ),
+                pointValue( Cartesian, 3D, 3D ),
+                pointValue( Cartesian, 4D, 4D ) );
     }
 
-    private void testIndexSeekRangeWithExists( ValueGroup valueGroup, Value obj1, Value obj2, Value obj3, Value obj4, Value obj5 ) throws Exception
+    @Test
+    public void testIndexSeekRangeWithExistsBySpatialArray() throws Exception
+    {
+        testIndexSeekRangeWithExists(
+                pointArray( new PointValue[] {pointValue( Cartesian, 0D, 0D ), pointValue( Cartesian, 0D, 1D )} ),
+                pointArray( new PointValue[] {pointValue( Cartesian, 10D, 1D ), pointValue( Cartesian, 10D, 2D )} ),
+                pointArray( new PointValue[] {pointValue( Cartesian, 20D, 2D ), pointValue( Cartesian, 20D, 3D )} ),
+                pointArray( new PointValue[] {pointValue( Cartesian, 30D, 3D ), pointValue( Cartesian, 30D, 4D )} ),
+                pointArray( new PointValue[] {pointValue( Cartesian, 40D, 4D ), pointValue( Cartesian, 40D, 5D )} ) );
+    }
+
+    @Test
+    public void testExactMatchOnRandomCompositeValues() throws Exception
+    {
+        // given
+        ValueType[] types = randomSetOfSupportedTypes();
+        List<IndexEntryUpdate<?>> updates = new ArrayList<>();
+        Set<ValueTuple> duplicateChecker = new HashSet<>();
+        for ( long id = 0; id < 10_000; id++ )
+        {
+            IndexEntryUpdate<SchemaDescriptor> update;
+            do
+            {
+                update = add( id, descriptor.schema(),
+                        random.randomValues().nextValueOfTypes( types ),
+                        random.randomValues().nextValueOfTypes( types ) );
+            }
+            while ( !duplicateChecker.add( ValueTuple.of( update.values() ) ) );
+            updates.add( update );
+        }
+        updateAndCommit( updates );
+
+        // when
+        for ( IndexEntryUpdate<?> update : updates )
+        {
+            // then
+            List<Long> hits = query( exact( 0, update.values()[0] ), exact( 1, update.values()[1] ) );
+            assertEquals( update + " " + hits.toString(), 1, hits.size() );
+            assertThat( single( hits ), equalTo( update.getEntityId() ) );
+        }
+    }
+
+    private void testIndexSeekRangeWithExists( Object obj1, Object obj2, Object obj3, Object obj4, Object obj5 ) throws Exception
+    {
+        testIndexSeekRangeWithExists( Values.of( obj1 ), Values.of( obj2 ), Values.of( obj3 ), Values.of( obj4 ), Values.of( obj5 ) );
+    }
+
+    private void testIndexSeekRangeWithExists( Value obj1, Value obj2, Value obj3, Value obj4, Value obj5 ) throws Exception
     {
         Assume.assumeTrue( "Assume support for granular composite queries", testSuite.supportsGranularCompositeQueries() );
         updateAndCommit( asList(
@@ -556,9 +680,450 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         assertThat( query( range( 0, obj5, false, obj2, true ), exists( 1 ) ), equalTo( EMPTY_LIST ) );
         assertThat( query( range( 0, null, false, obj3, false ), exists( 1 ) ), equalTo( asList( 1L, 2L ) ) );
         assertThat( query( range( 0, null, true, obj3, true ), exists( 1 ) ), equalTo( asList( 1L, 2L, 3L ) ) );
-        assertThat( query( range( 0, valueGroup ), exists( 1 ) ), equalTo( asList( 1L, 2L, 3L, 4L, 5L ) ) );
+        ValueGroup valueGroup = obj1.valueGroup();
+        if ( valueGroup != GEOMETRY && valueGroup != GEOMETRY_ARRAY )
+        {
+            // This cannot be done for spatial values because each bound in a spatial query needs a coordinate reference system,
+            // and those are provided by Value instances, e.g. PointValue
+            assertThat( query( range( 0, obj1.valueGroup() ), exists( 1 ) ), equalTo( asList( 1L, 2L, 3L, 4L, 5L ) ) );
+        }
         assertThat( query( range( 0, obj1, false, obj2, true ), exists( 1 ) ), equalTo( singletonList( 2L ) ) );
         assertThat( query( range( 0, obj1, false, obj3, false ), exists( 1 ) ), equalTo( singletonList( 2L ) ) );
+    }
+
+    /* IndexOrder */
+
+    @Test
+    public void shouldRangeSeekInOrderNumberAscending() throws Exception
+    {
+        Object o0 = 0;
+        Object o1 = 1;
+        Object o2 = 2;
+        Object o3 = 3;
+        Object o4 = 4;
+        Object o5 = 5;
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderNumberDescending() throws Exception
+    {
+        Object o0 = 0;
+        Object o1 = 1;
+        Object o2 = 2;
+        Object o3 = 3;
+        Object o4 = 4;
+        Object o5 = 5;
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderStringAscending() throws Exception
+    {
+        Object o0 = "0";
+        Object o1 = "1";
+        Object o2 = "2";
+        Object o3 = "3";
+        Object o4 = "4";
+        Object o5 = "5";
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderStringDescending() throws Exception
+    {
+        Object o0 = "0";
+        Object o1 = "1";
+        Object o2 = "2";
+        Object o3 = "3";
+        Object o4 = "4";
+        Object o5 = "5";
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingDate() throws Exception
+    {
+        Object o0 = DateValue.epochDateRaw( 0 );
+        Object o1 = DateValue.epochDateRaw( 1 );
+        Object o2 = DateValue.epochDateRaw( 2 );
+        Object o3 = DateValue.epochDateRaw( 3 );
+        Object o4 = DateValue.epochDateRaw( 4 );
+        Object o5 = DateValue.epochDateRaw( 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingDate() throws Exception
+    {
+        Object o0 = DateValue.epochDateRaw( 0 );
+        Object o1 = DateValue.epochDateRaw( 1 );
+        Object o2 = DateValue.epochDateRaw( 2 );
+        Object o3 = DateValue.epochDateRaw( 3 );
+        Object o4 = DateValue.epochDateRaw( 4 );
+        Object o5 = DateValue.epochDateRaw( 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingLocalTime() throws Exception
+    {
+        Object o0 = LocalTimeValue.localTimeRaw( 0 );
+        Object o1 = LocalTimeValue.localTimeRaw( 1 );
+        Object o2 = LocalTimeValue.localTimeRaw( 2 );
+        Object o3 = LocalTimeValue.localTimeRaw( 3 );
+        Object o4 = LocalTimeValue.localTimeRaw( 4 );
+        Object o5 = LocalTimeValue.localTimeRaw( 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingLocalTime() throws Exception
+    {
+        Object o0 = LocalTimeValue.localTimeRaw( 0 );
+        Object o1 = LocalTimeValue.localTimeRaw( 1 );
+        Object o2 = LocalTimeValue.localTimeRaw( 2 );
+        Object o3 = LocalTimeValue.localTimeRaw( 3 );
+        Object o4 = LocalTimeValue.localTimeRaw( 4 );
+        Object o5 = LocalTimeValue.localTimeRaw( 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingTime() throws Exception
+    {
+        Object o0 = TimeValue.timeRaw( 0, ZoneOffset.ofHours( 0 ) );
+        Object o1 = TimeValue.timeRaw( 1, ZoneOffset.ofHours( 0 ) );
+        Object o2 = TimeValue.timeRaw( 2, ZoneOffset.ofHours( 0 ) );
+        Object o3 = TimeValue.timeRaw( 3, ZoneOffset.ofHours( 0 ) );
+        Object o4 = TimeValue.timeRaw( 4, ZoneOffset.ofHours( 0 ) );
+        Object o5 = TimeValue.timeRaw( 5, ZoneOffset.ofHours( 0 ) );
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingTime() throws Exception
+    {
+        Object o0 = TimeValue.timeRaw( 0, ZoneOffset.ofHours( 0 ) );
+        Object o1 = TimeValue.timeRaw( 1, ZoneOffset.ofHours( 0 ) );
+        Object o2 = TimeValue.timeRaw( 2, ZoneOffset.ofHours( 0 ) );
+        Object o3 = TimeValue.timeRaw( 3, ZoneOffset.ofHours( 0 ) );
+        Object o4 = TimeValue.timeRaw( 4, ZoneOffset.ofHours( 0 ) );
+        Object o5 = TimeValue.timeRaw( 5, ZoneOffset.ofHours( 0 ) );
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingLocalDateTime() throws Exception
+    {
+        Object o0 = LocalDateTimeValue.localDateTimeRaw( 10, 0 );
+        Object o1 = LocalDateTimeValue.localDateTimeRaw( 10, 1 );
+        Object o2 = LocalDateTimeValue.localDateTimeRaw( 10, 2 );
+        Object o3 = LocalDateTimeValue.localDateTimeRaw( 10, 3 );
+        Object o4 = LocalDateTimeValue.localDateTimeRaw( 10, 4 );
+        Object o5 = LocalDateTimeValue.localDateTimeRaw( 10, 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingLocalDateTime() throws Exception
+    {
+        Object o0 = LocalDateTimeValue.localDateTimeRaw( 10, 0 );
+        Object o1 = LocalDateTimeValue.localDateTimeRaw( 10, 1 );
+        Object o2 = LocalDateTimeValue.localDateTimeRaw( 10, 2 );
+        Object o3 = LocalDateTimeValue.localDateTimeRaw( 10, 3 );
+        Object o4 = LocalDateTimeValue.localDateTimeRaw( 10, 4 );
+        Object o5 = LocalDateTimeValue.localDateTimeRaw( 10, 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingDateTime() throws Exception
+    {
+        Object o0 = DateTimeValue.datetimeRaw( 1, 0, ZoneId.of( "UTC" ) );
+        Object o1 = DateTimeValue.datetimeRaw( 1, 1, ZoneId.of( "UTC" ) );
+        Object o2 = DateTimeValue.datetimeRaw( 1, 2, ZoneId.of( "UTC" ) );
+        Object o3 = DateTimeValue.datetimeRaw( 1, 3, ZoneId.of( "UTC" ) );
+        Object o4 = DateTimeValue.datetimeRaw( 1, 4, ZoneId.of( "UTC" ) );
+        Object o5 = DateTimeValue.datetimeRaw( 1, 5, ZoneId.of( "UTC" ) );
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingDateTime() throws Exception
+    {
+        Object o0 = DateTimeValue.datetimeRaw( 1, 0, ZoneId.of( "UTC" ) );
+        Object o1 = DateTimeValue.datetimeRaw( 1, 1, ZoneId.of( "UTC" ) );
+        Object o2 = DateTimeValue.datetimeRaw( 1, 2, ZoneId.of( "UTC" ) );
+        Object o3 = DateTimeValue.datetimeRaw( 1, 3, ZoneId.of( "UTC" ) );
+        Object o4 = DateTimeValue.datetimeRaw( 1, 4, ZoneId.of( "UTC" ) );
+        Object o5 = DateTimeValue.datetimeRaw( 1, 5, ZoneId.of( "UTC" ) );
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingDuration() throws Exception
+    {
+        Object o0 = Duration.ofMillis( 0 );
+        Object o1 = Duration.ofMillis( 1 );
+        Object o2 = Duration.ofMillis( 2 );
+        Object o3 = Duration.ofMillis( 3 );
+        Object o4 = Duration.ofMillis( 4 );
+        Object o5 = Duration.ofMillis( 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingDuration() throws Exception
+    {
+        Object o0 = Duration.ofMillis( 0 );
+        Object o1 = Duration.ofMillis( 1 );
+        Object o2 = Duration.ofMillis( 2 );
+        Object o3 = Duration.ofMillis( 3 );
+        Object o4 = Duration.ofMillis( 4 );
+        Object o5 = Duration.ofMillis( 5 );
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingNumberArray() throws Exception
+    {
+        Object o0 = new int[]{0};
+        Object o1 = new int[]{1};
+        Object o2 = new int[]{2};
+        Object o3 = new int[]{3};
+        Object o4 = new int[]{4};
+        Object o5 = new int[]{5};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingNumberArray() throws Exception
+    {
+        Object o0 = new int[]{0};
+        Object o1 = new int[]{1};
+        Object o2 = new int[]{2};
+        Object o3 = new int[]{3};
+        Object o4 = new int[]{4};
+        Object o5 = new int[]{5};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingStringArray() throws Exception
+    {
+        Object o0 = new String[]{"0"};
+        Object o1 = new String[]{"1"};
+        Object o2 = new String[]{"2"};
+        Object o3 = new String[]{"3"};
+        Object o4 = new String[]{"4"};
+        Object o5 = new String[]{"5"};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingStringArray() throws Exception
+    {
+        Object o0 = new String[]{"0"};
+        Object o1 = new String[]{"1"};
+        Object o2 = new String[]{"2"};
+        Object o3 = new String[]{"3"};
+        Object o4 = new String[]{"4"};
+        Object o5 = new String[]{"5"};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingBooleanArray() throws Exception
+    {
+        Object o0 = new boolean[]{false};
+        Object o1 = new boolean[]{false, false};
+        Object o2 = new boolean[]{false, true};
+        Object o3 = new boolean[]{true};
+        Object o4 = new boolean[]{true, false};
+        Object o5 = new boolean[]{true, true};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingBooleanArray() throws Exception
+    {
+        Object o0 = new boolean[]{false};
+        Object o1 = new boolean[]{false, false};
+        Object o2 = new boolean[]{false, true};
+        Object o3 = new boolean[]{true};
+        Object o4 = new boolean[]{true, false};
+        Object o5 = new boolean[]{true, true};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingDateTimeArray() throws Exception
+    {
+        Object o0 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 0, ZoneId.of( "UTC" ) )};
+        Object o1 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 1, ZoneId.of( "UTC" ) )};
+        Object o2 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 2, ZoneId.of( "UTC" ) )};
+        Object o3 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 3, ZoneId.of( "UTC" ) )};
+        Object o4 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 4, ZoneId.of( "UTC" ) )};
+        Object o5 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 5, ZoneId.of( "UTC" ) )};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingDateTimeArray() throws Exception
+    {
+        Object o0 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 0, ZoneId.of( "UTC" ) )};
+        Object o1 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 1, ZoneId.of( "UTC" ) )};
+        Object o2 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 2, ZoneId.of( "UTC" ) )};
+        Object o3 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 3, ZoneId.of( "UTC" ) )};
+        Object o4 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 4, ZoneId.of( "UTC" ) )};
+        Object o5 = new ZonedDateTime[]{ZonedDateTime.of( 10, 10, 10, 10, 10, 10, 5, ZoneId.of( "UTC" ) )};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingLocalDateTimeArray() throws Exception
+    {
+        Object o0 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 0 )};
+        Object o1 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 1 )};
+        Object o2 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 2 )};
+        Object o3 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 3 )};
+        Object o4 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 4 )};
+        Object o5 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 5 )};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingLocalDateTimeArray() throws Exception
+    {
+        Object o0 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 0 )};
+        Object o1 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 1 )};
+        Object o2 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 2 )};
+        Object o3 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 3 )};
+        Object o4 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 4 )};
+        Object o5 = new LocalDateTime[]{LocalDateTime.of( 10, 10, 10, 10, 10, 10, 5 )};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingTimeArray() throws Exception
+    {
+        Object o0 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 0, ZoneOffset.ofHours( 0 ) )};
+        Object o1 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 1, ZoneOffset.ofHours( 0 ) )};
+        Object o2 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 2, ZoneOffset.ofHours( 0 ) )};
+        Object o3 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 3, ZoneOffset.ofHours( 0 ) )};
+        Object o4 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 4, ZoneOffset.ofHours( 0 ) )};
+        Object o5 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 5, ZoneOffset.ofHours( 0 ) )};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingTimeArray() throws Exception
+    {
+        Object o0 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 0, ZoneOffset.ofHours( 0 ) )};
+        Object o1 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 1, ZoneOffset.ofHours( 0 ) )};
+        Object o2 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 2, ZoneOffset.ofHours( 0 ) )};
+        Object o3 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 3, ZoneOffset.ofHours( 0 ) )};
+        Object o4 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 4, ZoneOffset.ofHours( 0 ) )};
+        Object o5 = new OffsetTime[]{OffsetTime.of( 10, 10, 10, 5, ZoneOffset.ofHours( 0 ) )};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingDateArray() throws Exception
+    {
+        Object o0 = new LocalDate[]{LocalDate.of( 10, 10, 1 )};
+        Object o1 = new LocalDate[]{LocalDate.of( 10, 10, 2 )};
+        Object o2 = new LocalDate[]{LocalDate.of( 10, 10, 3 )};
+        Object o3 = new LocalDate[]{LocalDate.of( 10, 10, 4 )};
+        Object o4 = new LocalDate[]{LocalDate.of( 10, 10, 5 )};
+        Object o5 = new LocalDate[]{LocalDate.of( 10, 10, 6 )};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingDateArray() throws Exception
+    {
+        Object o0 = new LocalDate[]{LocalDate.of( 10, 10, 1 )};
+        Object o1 = new LocalDate[]{LocalDate.of( 10, 10, 2 )};
+        Object o2 = new LocalDate[]{LocalDate.of( 10, 10, 3 )};
+        Object o3 = new LocalDate[]{LocalDate.of( 10, 10, 4 )};
+        Object o4 = new LocalDate[]{LocalDate.of( 10, 10, 5 )};
+        Object o5 = new LocalDate[]{LocalDate.of( 10, 10, 6 )};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingLocalTimeArray() throws Exception
+    {
+        Object o0 = new LocalTime[]{LocalTime.of( 10, 0 )};
+        Object o1 = new LocalTime[]{LocalTime.of( 10, 1  )};
+        Object o2 = new LocalTime[]{LocalTime.of( 10, 2 )};
+        Object o3 = new LocalTime[]{LocalTime.of( 10, 3 )};
+        Object o4 = new LocalTime[]{LocalTime.of( 10, 4 )};
+        Object o5 = new LocalTime[]{LocalTime.of( 10, 5 )};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingLocalTimeArray() throws Exception
+    {
+        Object o0 = new LocalTime[]{LocalTime.of( 10, 0 )};
+        Object o1 = new LocalTime[]{LocalTime.of( 10, 1 )};
+        Object o2 = new LocalTime[]{LocalTime.of( 10, 2 )};
+        Object o3 = new LocalTime[]{LocalTime.of( 10, 3 )};
+        Object o4 = new LocalTime[]{LocalTime.of( 10, 4 )};
+        Object o5 = new LocalTime[]{LocalTime.of( 10, 5 )};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderAscendingDurationArray() throws Exception
+    {
+        Object o0 = new Duration[]{Duration.of( 0, ChronoUnit.SECONDS )};
+        Object o1 = new Duration[]{Duration.of( 1, ChronoUnit.SECONDS )};
+        Object o2 = new Duration[]{Duration.of( 2, ChronoUnit.SECONDS )};
+        Object o3 = new Duration[]{Duration.of( 3, ChronoUnit.SECONDS )};
+        Object o4 = new Duration[]{Duration.of( 4, ChronoUnit.SECONDS )};
+        Object o5 = new Duration[]{Duration.of( 5, ChronoUnit.SECONDS )};
+        shouldSeekInOrderExactWithRange( IndexOrder.ASCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    @Test
+    public void shouldRangeSeekInOrderDescendingDurationArray() throws Exception
+    {
+        Object o0 = new Duration[]{Duration.of( 0, ChronoUnit.SECONDS )};
+        Object o1 = new Duration[]{Duration.of( 1, ChronoUnit.SECONDS )};
+        Object o2 = new Duration[]{Duration.of( 2, ChronoUnit.SECONDS )};
+        Object o3 = new Duration[]{Duration.of( 3, ChronoUnit.SECONDS )};
+        Object o4 = new Duration[]{Duration.of( 4, ChronoUnit.SECONDS )};
+        Object o5 = new Duration[]{Duration.of( 5, ChronoUnit.SECONDS )};
+        shouldSeekInOrderExactWithRange( IndexOrder.DESCENDING, o0, o1, o2, o3, o4, o5 );
+    }
+
+    private void shouldSeekInOrderExactWithRange( IndexOrder order, Object o0, Object o1, Object o2, Object o3, Object o4, Object o5 ) throws Exception
+    {
+        Object baseValue = 1; // Todo use random value instead
+        IndexQuery exact = exact( 100, baseValue );
+        IndexQuery range = range( 200, Values.of( o0 ), true, Values.of( o5 ), true );
+        IndexOrder[] indexOrders = orderCapability( exact, range );
+        Assume.assumeTrue( "Assume support for order " + order, ArrayUtils.contains( indexOrders, order ) );
+
+        updateAndCommit( asList(
+                add( 1, descriptor.schema(), baseValue, o0 ),
+                add( 1, descriptor.schema(), baseValue, o5 ),
+                add( 1, descriptor.schema(), baseValue, o1 ),
+                add( 1, descriptor.schema(), baseValue, o4 ),
+                add( 1, descriptor.schema(), baseValue, o2 ),
+                add( 1, descriptor.schema(), baseValue, o3 )
+        ) );
+
+        SimpleNodeValueClient client = new SimpleNodeValueClient();
+        try ( AutoCloseable ignored = query( client, order, exact, range ) )
+        {
+            List<Long> seenIds = assertClientReturnValuesInOrder( client, order );
+            assertThat( seenIds.size(), equalTo( 6 ) );
+        }
     }
 
     // This behaviour is expected by General indexes
@@ -588,7 +1153,7 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         public void testDuplicatesInIndexSeekByPoint() throws Exception
         {
             Assume.assumeTrue( "Assume support for spatial", testSuite.supportsSpatial() );
-            testDuplicatesInIndexSeek( Values.pointValue( CoordinateReferenceSystem.WGS84, 12.6, 56.7 ) );
+            testDuplicatesInIndexSeek( pointValue( WGS84, 12.6, 56.7 ) );
         }
 
         @Test
@@ -631,9 +1196,9 @@ public abstract class CompositeIndexAccessorCompatibility extends IndexAccessorC
         public void testDuplicatesInIndexSeekByPointArray() throws Exception
         {
             Assume.assumeTrue( "Assume support for spatial", testSuite.supportsSpatial() );
-            testDuplicatesInIndexSeek( Values.pointArray( new PointValue[]{
-                    Values.pointValue( CoordinateReferenceSystem.WGS84, 12.6, 56.7 ),
-                    Values.pointValue( CoordinateReferenceSystem.WGS84, 12.6, 56.7 )
+            testDuplicatesInIndexSeek( pointArray( new PointValue[]{
+                    pointValue( WGS84, 12.6, 56.7 ),
+                    pointValue( WGS84, 12.6, 56.7 )
             } ) );
         }
 

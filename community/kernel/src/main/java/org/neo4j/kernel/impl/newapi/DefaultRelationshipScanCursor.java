@@ -71,7 +71,7 @@ class DefaultRelationshipScanCursor extends DefaultRelationshipCursor<StorageRel
 
         while ( storeCursor.next() )
         {
-            if ( !hasChanges || !read.txState().relationshipIsDeletedInThisTx( storeCursor.relationshipReference() ) )
+            if ( !hasChanges || !read.txState().relationshipIsDeletedInThisTx( storeCursor.entityReference() ) )
             {
                 return true;
             }
@@ -106,13 +106,14 @@ class DefaultRelationshipScanCursor extends DefaultRelationshipCursor<StorageRel
         }
         else
         {
-            return "RelationshipScanCursor[id=" + storeCursor.relationshipReference() +
+            return "RelationshipScanCursor[id=" + storeCursor.entityReference() +
                     ", open state with: single=" + single +
                     ", type=" + type +
                     ", " + storeCursor.toString() + "]";
         }
     }
 
+    @Override
     protected void collectAddedTxStateSnapshot()
     {
         if ( isSingle() )

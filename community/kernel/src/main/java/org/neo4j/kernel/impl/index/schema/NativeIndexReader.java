@@ -24,16 +24,13 @@ import java.io.UncheckedIOException;
 import java.util.HashSet;
 import java.util.Set;
 
-import org.neo4j.collection.PrimitiveLongResourceCollections;
 import org.neo4j.collection.PrimitiveLongResourceIterator;
 import org.neo4j.cursor.RawCursor;
 import org.neo4j.index.internal.gbptree.GBPTree;
 import org.neo4j.index.internal.gbptree.Hit;
-import org.neo4j.index.internal.gbptree.Layout;
 import org.neo4j.internal.kernel.api.IndexOrder;
 import org.neo4j.internal.kernel.api.IndexQuery;
 import org.neo4j.io.IOUtils;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
 import org.neo4j.storageengine.api.schema.IndexProgressor;
 import org.neo4j.storageengine.api.schema.IndexReader;
@@ -46,18 +43,14 @@ abstract class NativeIndexReader<KEY extends NativeIndexKey<KEY>, VALUE extends 
         implements IndexReader
 {
     protected final IndexDescriptor descriptor;
-    final Layout<KEY,VALUE> layout;
+    final IndexLayout<KEY,VALUE> layout;
     final Set<RawCursor<Hit<KEY,VALUE>,IOException>> openSeekers;
     private final GBPTree<KEY,VALUE> tree;
-    private final IndexSamplingConfig samplingConfig;
 
-    NativeIndexReader( GBPTree<KEY,VALUE> tree, Layout<KEY,VALUE> layout,
-            IndexSamplingConfig samplingConfig,
-            IndexDescriptor descriptor )
+    NativeIndexReader( GBPTree<KEY,VALUE> tree, IndexLayout<KEY,VALUE> layout, IndexDescriptor descriptor )
     {
         this.tree = tree;
         this.layout = layout;
-        this.samplingConfig = samplingConfig;
         this.descriptor = descriptor;
         this.openSeekers = new HashSet<>();
     }
@@ -78,13 +71,12 @@ abstract class NativeIndexReader<KEY extends NativeIndexKey<KEY>, VALUE extends 
         // non-unique sampler which scans the index and counts (potentially duplicates, of which there will
         // be none in a unique index).
 
-        FullScanNonUniqueIndexSampler<KEY,VALUE> sampler =
-                new FullScanNonUniqueIndexSampler<>( tree, layout, samplingConfig );
+        FullScanNonUniqueIndexSampler<KEY,VALUE> sampler = new FullScanNonUniqueIndexSampler<>( tree, layout );
         return sampler::result;
     }
 
     @Override
-    public long countIndexedNodes( long nodeId, Value... propertyValues )
+    public long countIndexedNodes( long nodeId, int[] propertyKeyIds, Value... propertyValues )
     {
         KEY treeKeyFrom = layout.newKey();
         KEY treeKeyTo = layout.newKey();
@@ -116,49 +108,29 @@ abstract class NativeIndexReader<KEY extends NativeIndexKey<KEY>, VALUE extends 
     @Override
     public PrimitiveLongResourceIterator query( IndexQuery... predicates )
     {
-        KEY treeKeyFrom = layout.newKey();
-        KEY treeKeyTo = layout.newKey();
-
-        treeKeyFrom.initialize( Long.MIN_VALUE );
-        treeKeyTo.initialize( Long.MAX_VALUE );
-
-        boolean needFilter = initializeRangeForQuery( treeKeyFrom, treeKeyTo, predicates );
-        if ( isBackwardsSeek( treeKeyFrom, treeKeyTo ) )
-        {
-            return PrimitiveLongResourceCollections.emptyIterator();
-        }
-
-        try
-        {
-            RawCursor<Hit<KEY,VALUE>,IOException> seeker = tree.seek( treeKeyFrom, treeKeyTo );
-            openSeekers.add( seeker );
-            return getHitIterator( seeker, needFilter, predicates );
-        }
-        catch ( IOException e )
-        {
-            throw new UncheckedIOException( e );
-        }
-    }
-
-    private PrimitiveLongResourceIterator getHitIterator( RawCursor<Hit<KEY,VALUE>,IOException> seeker, boolean needFilter, IndexQuery[] predicates )
-    {
-        return needFilter ? new FilteringNativeHitIterator<>( seeker, openSeekers, predicates )
-                          : new NativeHitIterator<>( seeker, openSeekers );
+        // This method isn't called from main product code anymore so it can might as well delegate to the "real" method
+        NodeValueIterator nodeValueIterator = new NodeValueIterator();
+        query( nodeValueIterator, IndexOrder.NONE, nodeValueIterator.needsValues(), predicates );
+        return nodeValueIterator;
     }
 
     @Override
-    public void query( IndexProgressor.NodeValueClient cursor, IndexOrder indexOrder, IndexQuery... predicates )
+    public void query( IndexProgressor.NodeValueClient cursor, IndexOrder indexOrder, boolean needsValues, IndexQuery... predicates )
     {
         validateQuery( indexOrder, predicates );
 
         KEY treeKeyFrom = layout.newKey();
         KEY treeKeyTo = layout.newKey();
-
-        treeKeyFrom.initialize( Long.MIN_VALUE );
-        treeKeyTo.initialize( Long.MAX_VALUE );
+        initializeFromToKeys( treeKeyFrom, treeKeyTo );
 
         boolean needFilter = initializeRangeForQuery( treeKeyFrom, treeKeyTo, predicates );
-        startSeekForInitializedRange( cursor, treeKeyFrom, treeKeyTo, predicates, needFilter );
+        startSeekForInitializedRange( cursor, treeKeyFrom, treeKeyTo, predicates, indexOrder, needFilter, needsValues );
+    }
+
+    void initializeFromToKeys( KEY treeKeyFrom, KEY treeKeyTo )
+    {
+        treeKeyFrom.initialize( Long.MIN_VALUE );
+        treeKeyTo.initialize( Long.MAX_VALUE );
     }
 
     @Override
@@ -171,18 +143,19 @@ abstract class NativeIndexReader<KEY extends NativeIndexKey<KEY>, VALUE extends 
      */
     abstract boolean initializeRangeForQuery( KEY treeKeyFrom, KEY treeKeyTo, IndexQuery[] predicates );
 
-    void startSeekForInitializedRange( IndexProgressor.NodeValueClient client, KEY treeKeyFrom, KEY treeKeyTo, IndexQuery[] query, boolean needFilter )
+    void startSeekForInitializedRange( IndexProgressor.NodeValueClient client, KEY treeKeyFrom, KEY treeKeyTo, IndexQuery[] query,
+            IndexOrder indexOrder, boolean needFilter, boolean needsValues )
     {
-        if ( isBackwardsSeek( treeKeyFrom, treeKeyTo ) )
+        if ( isEmptyRange( treeKeyFrom, treeKeyTo ) )
         {
-            client.initialize( descriptor, IndexProgressor.EMPTY, query );
+            client.initialize( descriptor, IndexProgressor.EMPTY, query, indexOrder, needsValues );
             return;
         }
         try
         {
-            RawCursor<Hit<KEY,VALUE>,IOException> seeker = makeIndexSeeker( treeKeyFrom, treeKeyTo );
+            RawCursor<Hit<KEY,VALUE>,IOException> seeker = makeIndexSeeker( treeKeyFrom, treeKeyTo, indexOrder );
             IndexProgressor hitProgressor = getIndexProgressor( seeker, client, needFilter, query );
-            client.initialize( descriptor, hitProgressor, query );
+            client.initialize( descriptor, hitProgressor, query, indexOrder, needsValues );
         }
         catch ( IOException e )
         {
@@ -190,8 +163,14 @@ abstract class NativeIndexReader<KEY extends NativeIndexKey<KEY>, VALUE extends 
         }
     }
 
-    RawCursor<Hit<KEY,VALUE>,IOException> makeIndexSeeker( KEY treeKeyFrom, KEY treeKeyTo ) throws IOException
+    RawCursor<Hit<KEY,VALUE>,IOException> makeIndexSeeker( KEY treeKeyFrom, KEY treeKeyTo, IndexOrder indexOrder ) throws IOException
     {
+        if ( indexOrder == IndexOrder.DESCENDING )
+        {
+            KEY tmpKey = treeKeyFrom;
+            treeKeyFrom = treeKeyTo;
+            treeKeyTo = tmpKey;
+        }
         RawCursor<Hit<KEY,VALUE>,IOException> seeker = tree.seek( treeKeyFrom, treeKeyTo );
         openSeekers.add( seeker );
         return seeker;
@@ -204,7 +183,7 @@ abstract class NativeIndexReader<KEY extends NativeIndexKey<KEY>, VALUE extends 
                           : new NativeHitIndexProgressor<>( seeker, client, openSeekers );
     }
 
-    private boolean isBackwardsSeek( KEY treeKeyFrom, KEY treeKeyTo )
+    private boolean isEmptyRange( KEY treeKeyFrom, KEY treeKeyTo )
     {
         return layout.compare( treeKeyFrom, treeKeyTo ) > 0;
     }

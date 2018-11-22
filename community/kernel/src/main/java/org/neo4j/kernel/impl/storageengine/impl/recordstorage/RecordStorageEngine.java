@@ -26,15 +26,16 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Supplier;
 
-import org.neo4j.internal.diagnostics.DiagnosticsManager;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
+import org.neo4j.internal.diagnostics.DiagnosticsManager;
 import org.neo4j.internal.kernel.api.TokenNameLookup;
 import org.neo4j.internal.kernel.api.exceptions.TransactionFailureException;
 import org.neo4j.internal.kernel.api.exceptions.schema.ConstraintValidationException;
 import org.neo4j.internal.kernel.api.exceptions.schema.CreateConstraintFailureException;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.IOLimiter;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.tracing.cursor.context.VersionContextSupplier;
@@ -146,11 +147,12 @@ public class RecordStorageEngine implements StorageEngine, Lifecycle
     private final int recordIdBatchSize;
 
     public RecordStorageEngine(
-            File storeDir,
+            DatabaseLayout databaseLayout,
             Config config,
             PageCache pageCache,
             FileSystemAbstraction fs,
             LogProvider logProvider,
+            LogProvider userLogProvider,
             TokenHolders tokenHolders,
             SchemaState schemaState,
             ConstraintSemantics constraintSemantics,
@@ -180,7 +182,7 @@ public class RecordStorageEngine implements StorageEngine, Lifecycle
         this.explicitIndexTransactionOrdering = explicitIndexTransactionOrdering;
 
         this.idController = idController;
-        StoreFactory factory = new StoreFactory( storeDir, config, idGeneratorFactory, pageCache, fs, logProvider,
+        StoreFactory factory = new StoreFactory( databaseLayout, config, idGeneratorFactory, pageCache, fs, logProvider,
                 versionContextSupplier );
         neoStores = factory.openAllNeoStores( true );
 
@@ -193,7 +195,7 @@ public class RecordStorageEngine implements StorageEngine, Lifecycle
             NeoStoreIndexStoreView neoStoreIndexStoreView = new NeoStoreIndexStoreView( lockService, neoStores );
             boolean readOnly = config.get( GraphDatabaseSettings.read_only ) && operationalMode == OperationalMode.single;
             monitors.addMonitorListener( new LoggingMonitor( logProvider.getLog( NativeLabelScanStore.class ) ) );
-            labelScanStore = new NativeLabelScanStore( pageCache, storeDir, fs, new FullLabelStream( neoStoreIndexStoreView ),
+            labelScanStore = new NativeLabelScanStore( pageCache, databaseLayout, fs, new FullLabelStream( neoStoreIndexStoreView ),
                     readOnly, monitors, recoveryCleanupWorkCollector );
 
             // We need to load the property tokens here, since we need them before we load the indexes.
@@ -203,7 +205,7 @@ public class RecordStorageEngine implements StorageEngine, Lifecycle
             this.indexProviderMap = indexProviderMap;
             indexingService = IndexingServiceFactory.createIndexingService( config, scheduler, indexProviderMap,
                     indexStoreView, tokenNameLookup,
-                    Iterators.asList( schemaStorage.indexesGetAll() ), logProvider,
+                    Iterators.asList( schemaStorage.indexesGetAll() ), logProvider, userLogProvider,
                     indexingServiceMonitor, schemaState );
 
             integrityValidator = new IntegrityValidator( neoStores, indexingService );
@@ -363,7 +365,6 @@ public class RecordStorageEngine implements StorageEngine, Lifecycle
         satisfier.satisfyDependency( integrityValidator );
         satisfier.satisfyDependency( labelScanStore );
         satisfier.satisfyDependency( indexingService );
-        // providing TransactionIdStore, LogVersionRepository
         satisfier.satisfyDependency( neoStores.getMetaDataStore() );
         satisfier.satisfyDependency( indexStoreView );
     }
@@ -474,7 +475,7 @@ public class RecordStorageEngine implements StorageEngine, Lifecycle
             {
                 final RecordStore<AbstractBaseRecord> recordStore = neoStores.getRecordStore( type );
                 StoreFileMetadata metadata =
-                        new StoreFileMetadata( recordStore.getStorageFileName(), recordStore.getRecordSize() );
+                        new StoreFileMetadata( recordStore.getStorageFile(), recordStore.getRecordSize() );
                 files.add( metadata );
             }
         }

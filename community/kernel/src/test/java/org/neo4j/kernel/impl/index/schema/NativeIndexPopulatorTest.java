@@ -19,588 +19,200 @@
  */
 package org.neo4j.kernel.impl.index.schema;
 
-import org.apache.commons.lang3.RandomStringUtils;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
+import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Optional;
-import java.util.Random;
+import java.util.HashMap;
 
-import org.neo4j.index.internal.gbptree.GBPTree;
-import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
-import org.neo4j.io.fs.OpenMode;
-import org.neo4j.io.fs.StoreChannel;
-import org.neo4j.io.pagecache.PagedFile;
-import org.neo4j.kernel.api.exceptions.index.IndexEntryConflictException;
-import org.neo4j.kernel.api.index.IndexEntryUpdate;
-import org.neo4j.kernel.api.index.IndexUpdater;
-import org.neo4j.kernel.api.index.NodePropertyAccessor;
+import org.neo4j.gis.spatial.index.curves.StandardConfiguration;
+import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.pagecache.PageCache;
+import org.neo4j.kernel.api.index.IndexProvider;
+import org.neo4j.kernel.api.schema.index.TestIndexDescriptorFactory;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
-import org.neo4j.storageengine.api.schema.IndexDescriptor;
-import org.neo4j.values.storable.Values;
+import org.neo4j.kernel.impl.index.schema.config.ConfiguredSpaceFillingCurveSettingsCache;
+import org.neo4j.kernel.impl.index.schema.config.IndexSpecificSpaceFillingCurveSettingsCache;
+import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
+import org.neo4j.values.storable.RandomValues;
+import org.neo4j.values.storable.ValueGroup;
+import org.neo4j.values.storable.ValueType;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.neo4j.index.internal.gbptree.GBPTree.NO_HEADER_WRITER;
-import static org.neo4j.kernel.impl.index.schema.NativeIndexPopulator.BYTE_FAILED;
-import static org.neo4j.kernel.impl.index.schema.NativeIndexPopulator.BYTE_ONLINE;
-
-public abstract class NativeIndexPopulatorTest<KEY extends NativeIndexSingleValueKey<KEY>,VALUE extends NativeIndexValue>
-        extends NativeIndexTestUtil<KEY,VALUE>
+public class NativeIndexPopulatorTest
 {
-    private static final int LARGE_AMOUNT_OF_UPDATES = 1_000;
-    static final NodePropertyAccessor null_property_accessor = ( nodeId, propKeyId ) ->
+    private static Collection<Object[]> allPopulators()
     {
-        throw new RuntimeException( "Did not expect an attempt to go to store" );
-    };
-
-    NativeIndexPopulator<KEY,VALUE> populator;
-
-    @Before
-    public void setupPopulator() throws IOException
-    {
-        IndexSamplingConfig samplingConfig = new IndexSamplingConfig( Config.defaults() );
-        populator = createPopulator( samplingConfig );
+        return Arrays.asList( new Object[][]{
+                {"Number",
+                        numberPopulatorFactory(),
+                        RandomValues.typesOfGroup( ValueGroup.NUMBER ),
+                        (IndexLayoutFactory) NumberLayoutNonUnique::new
+                },
+                {"String",
+                        (PopulatorFactory) StringIndexPopulator::new,
+                        RandomValues.typesOfGroup( ValueGroup.TEXT ),
+                        (IndexLayoutFactory) StringLayout::new
+                },
+                {"Date",
+                        temporalPopulatorFactory( ValueGroup.DATE ),
+                        RandomValues.typesOfGroup( ValueGroup.DATE ),
+                        (IndexLayoutFactory) DateLayout::new
+                },
+                {"DateTime",
+                        temporalPopulatorFactory( ValueGroup.ZONED_DATE_TIME ),
+                        RandomValues.typesOfGroup( ValueGroup.ZONED_DATE_TIME ),
+                        (IndexLayoutFactory) ZonedDateTimeLayout::new
+                },
+                {"Duration",
+                        temporalPopulatorFactory( ValueGroup.DURATION ),
+                        RandomValues.typesOfGroup( ValueGroup.DURATION ),
+                        (IndexLayoutFactory) DurationLayout::new
+                },
+                {"LocalDateTime",
+                        temporalPopulatorFactory( ValueGroup.LOCAL_DATE_TIME ),
+                        RandomValues.typesOfGroup( ValueGroup.LOCAL_DATE_TIME ),
+                        (IndexLayoutFactory) LocalDateTimeLayout::new
+                },
+                {"LocalTime",
+                        temporalPopulatorFactory( ValueGroup.LOCAL_TIME ),
+                        RandomValues.typesOfGroup( ValueGroup.LOCAL_TIME ),
+                        (IndexLayoutFactory) LocalTimeLayout::new
+                },
+                {"LocalDateTime",
+                        temporalPopulatorFactory( ValueGroup.LOCAL_DATE_TIME ),
+                        RandomValues.typesOfGroup( ValueGroup.LOCAL_DATE_TIME ),
+                        (IndexLayoutFactory) LocalDateTimeLayout::new
+                },
+                {"Time",
+                        temporalPopulatorFactory( ValueGroup.ZONED_TIME ),
+                        RandomValues.typesOfGroup( ValueGroup.ZONED_TIME ),
+                        (IndexLayoutFactory) ZonedTimeLayout::new
+                },
+                {"Generic",
+                        genericPopulatorFactory(),
+                        ValueType.values(),
+                        (IndexLayoutFactory) () -> new GenericLayout( 1, spaceFillingCurveSettings )
+                },
+                // todo { Spatial has it's own subclass because it need to override some of the test methods }
+        } );
     }
 
-    abstract NativeIndexPopulator<KEY,VALUE> createPopulator( IndexSamplingConfig samplingConfig ) throws IOException;
+    private static final IndexSpecificSpaceFillingCurveSettingsCache spaceFillingCurveSettings =
+            new IndexSpecificSpaceFillingCurveSettingsCache( new ConfiguredSpaceFillingCurveSettingsCache( Config.defaults() ), new HashMap<>() );
+    private static final StandardConfiguration configuration = new StandardConfiguration();
 
-    @Test
-    public void createShouldCreateFile() throws Exception
+    private static PopulatorFactory<NumberIndexKey,NativeIndexValue> numberPopulatorFactory()
     {
-        // given
-        assertFileNotPresent();
-
-        // when
-        populator.create();
-
-        // then
-        assertFilePresent();
-        populator.close( true );
+        return NumberIndexPopulator::new;
     }
 
-    @Test
-    public void createShouldClearExistingFile() throws Exception
+    private static <TK extends NativeIndexSingleValueKey<TK>> PopulatorFactory<TK,NativeIndexValue> temporalPopulatorFactory( ValueGroup temporalValueGroup )
     {
-        // given
-        byte[] someBytes = fileWithContent();
-
-        // when
-        populator.create();
-
-        // then
-        try ( StoreChannel r = fs.open( getIndexFile(), OpenMode.READ ) )
+        return ( pageCache, fs, storeFile, layout, monitor, descriptor ) ->
         {
-            byte[] firstBytes = new byte[someBytes.length];
-            r.readAll( ByteBuffer.wrap( firstBytes ) );
-            assertNotEquals( "Expected previous file content to have been cleared but was still there",
-                    someBytes, firstBytes );
-        }
-        populator.close( true );
+            TemporalIndexFiles.FileLayout<TK> fileLayout = new TemporalIndexFiles.FileLayout<>( storeFile, layout, temporalValueGroup );
+            return new TemporalIndexPopulator.PartPopulator<>( pageCache, fs, fileLayout, monitor, descriptor );
+        };
     }
 
-    @Test
-    public void dropShouldDeleteExistingFile() throws Exception
+    private static PopulatorFactory<GenericKey,NativeIndexValue> genericPopulatorFactory()
     {
-        // given
-        populator.create();
-
-        // when
-        populator.drop();
-
-        // then
-        assertFileNotPresent();
+        return ( pageCache, fs, storeFile, layout, monitor, descriptor ) ->
+                new GenericNativeIndexPopulator( pageCache, fs, storeFile, layout, monitor, descriptor, spaceFillingCurveSettings,
+                        SimpleIndexDirectoryStructures.onIndexFile( storeFile ), configuration, false, false );
     }
 
-    @Test
-    public void dropShouldSucceedOnNonExistentFile() throws Exception
+    @FunctionalInterface
+    private interface PopulatorFactory<KEY extends NativeIndexKey<KEY>, VALUE extends NativeIndexValue>
     {
-        // given
-        assertFileNotPresent();
-
-        // when
-        populator.drop();
-
-        // then
-        assertFileNotPresent();
+        NativeIndexPopulator<KEY,VALUE> create( PageCache pageCache, FileSystemAbstraction fs, File storeFile, IndexLayout<KEY,VALUE> layout,
+                IndexProvider.Monitor monitor, StoreIndexDescriptor descriptor ) throws IOException;
     }
 
-    @Test
-    public void addShouldHandleEmptyCollection() throws Exception
+    @RunWith( Parameterized.class )
+    public static class UniqueTest<KEY extends NativeIndexKey<KEY>, VALUE extends NativeIndexValue> extends NativeIndexPopulatorTests.Unique<KEY,VALUE>
     {
-        // given
-        populator.create();
-        List<IndexEntryUpdate<?>> updates = Collections.emptyList();
-
-        // when
-        populator.add( updates );
-
-        // then
-        populator.close( true );
-    }
-
-    @Test
-    public void addShouldApplyAllUpdatesOnce() throws Exception
-    {
-        // given
-        populator.create();
-        @SuppressWarnings( "unchecked" )
-        IndexEntryUpdate<IndexDescriptor>[] updates = layoutUtil.someUpdates();
-
-        // when
-        populator.add( Arrays.asList( updates ) );
-
-        // then
-        populator.close( true );
-        verifyUpdates( updates );
-    }
-
-    @Test
-    public void updaterShouldApplyUpdates() throws Exception
-    {
-        // given
-        populator.create();
-        IndexEntryUpdate<IndexDescriptor>[] updates = layoutUtil.someUpdates();
-        try ( IndexUpdater updater = populator.newPopulatingUpdater( null_property_accessor ) )
+        @Parameterized.Parameters( name = "{index} {0}" )
+        public static Collection<Object[]> data()
         {
-            // when
-            for ( IndexEntryUpdate<IndexDescriptor> update : updates )
-            {
-                updater.process( update );
-            }
+            return allPopulators();
         }
 
-        // then
-        populator.close( true );
-        verifyUpdates( updates );
-    }
+        @Parameterized.Parameter()
+        public String name;
 
-    @Test
-    public void updaterMustThrowIfProcessAfterClose() throws Exception
-    {
-        // given
-        populator.create();
-        IndexUpdater updater = populator.newPopulatingUpdater( null_property_accessor );
+        @Parameterized.Parameter( 1 )
+        public PopulatorFactory<KEY,VALUE> populatorFactory;
 
-        // when
-        updater.close();
+        @Parameterized.Parameter( 2 )
+        public ValueType[] supportedTypes;
 
-        // then
-        try
+        @Parameterized.Parameter( 3 )
+        public IndexLayoutFactory<KEY,VALUE> indexLayoutFactory;
+
+        private static final StoreIndexDescriptor uniqueDescriptor = TestIndexDescriptorFactory.uniqueForLabel( 42, 666 ).withId( 0 );
+
+        @Override
+        NativeIndexPopulator<KEY,VALUE> createPopulator() throws IOException
         {
-            updater.process( layoutUtil.add( 1, Values.of( Long.MAX_VALUE ) ) );
-            fail( "Expected process to throw on closed updater" );
-        }
-        catch ( IllegalStateException e )
-        {
-            // good
-        }
-        populator.close( true );
-    }
-
-    @Test
-    public void shouldApplyInterleavedUpdatesFromAddAndUpdater() throws Exception
-    {
-        // given
-        populator.create();
-        @SuppressWarnings( "unchecked" )
-        IndexEntryUpdate<IndexDescriptor>[] updates = layoutUtil.someUpdates();
-
-        // when
-        applyInterleaved( updates, populator );
-
-        // then
-        populator.close( true );
-        verifyUpdates( updates );
-    }
-
-    @Test
-    public void successfulCloseMustCloseGBPTree() throws Exception
-    {
-        // given
-        populator.create();
-        Optional<PagedFile> existingMapping = pageCache.getExistingMapping( getIndexFile() );
-        if ( existingMapping.isPresent() )
-        {
-            existingMapping.get().close();
-        }
-        else
-        {
-            fail( "Expected underlying GBPTree to have a mapping for this file" );
+            return populatorFactory.create( pageCache, fs, getIndexFile(), layout, monitor, indexDescriptor );
         }
 
-        // when
-        populator.close( true );
-
-        // then
-        existingMapping = pageCache.getExistingMapping( getIndexFile() );
-        assertFalse( existingMapping.isPresent() );
-    }
-
-    @Test
-    public void successfulCloseMustMarkIndexAsOnline() throws Exception
-    {
-        // given
-        populator.create();
-
-        // when
-        populator.close( true );
-
-        // then
-        assertHeader( true, null, false );
-    }
-
-    @Test
-    public void unsuccessfulCloseMustSucceedWithoutMarkAsFailed() throws Exception
-    {
-        // given
-        populator.create();
-
-        // then
-        populator.close( false );
-    }
-
-    @Test
-    public void unsuccessfulCloseMustCloseGBPTree() throws Exception
-    {
-        // given
-        populator.create();
-        Optional<PagedFile> existingMapping = pageCache.getExistingMapping( getIndexFile() );
-        if ( existingMapping.isPresent() )
+        @Override
+        ValueCreatorUtil<KEY,VALUE> createValueCreatorUtil()
         {
-            existingMapping.get().close();
-        }
-        else
-        {
-            fail( "Expected underlying GBPTree to have a mapping for this file" );
+            return new ValueCreatorUtil<>( uniqueDescriptor, supportedTypes, ValueCreatorUtil.FRACTION_DUPLICATE_UNIQUE );
         }
 
-        // when
-        populator.close( false );
-
-        // then
-        existingMapping = pageCache.getExistingMapping( getIndexFile() );
-        assertFalse( existingMapping.isPresent() );
-    }
-
-    @Test
-    public void unsuccessfulCloseMustNotMarkIndexAsOnline() throws Exception
-    {
-        // given
-        populator.create();
-
-        // when
-        populator.close( false );
-
-        // then
-        assertHeader( false, "", false );
-    }
-
-    @Test
-    public void closeMustWriteFailureMessageAfterMarkedAsFailed() throws Exception
-    {
-        // given
-        populator.create();
-
-        // when
-        String failureMessage = "Fly, you fools!";
-        populator.markAsFailed( failureMessage );
-        populator.close( false );
-
-        // then
-        assertHeader( false, failureMessage, false );
-    }
-
-    @Test
-    public void closeMustWriteFailureMessageAfterMarkedAsFailedWithLongMessage() throws Exception
-    {
-        // given
-        populator.create();
-
-        // when
-        String failureMessage = longString( pageCache.pageSize() );
-        populator.markAsFailed( failureMessage );
-        populator.close( false );
-
-        // then
-        assertHeader( false, failureMessage, true );
-    }
-
-    @Test
-    public void successfulCloseMustThrowIfMarkedAsFailed() throws Exception
-    {
-        // given
-        populator.create();
-
-        // when
-        populator.markAsFailed( "" );
-
-        // then
-        try
+        @Override
+        IndexLayout<KEY,VALUE> createLayout()
         {
-            populator.close( true );
-            fail( "Expected successful close to fail after markedAsFailed" );
-        }
-        catch ( IllegalStateException e )
-        {
-            // good
-        }
-        populator.close( false );
-    }
-
-    @Test
-    public void shouldApplyLargeAmountOfInterleavedRandomUpdates() throws Exception
-    {
-        // given
-        populator.create();
-        random.reset();
-        Random updaterRandom = new Random( random.seed() );
-        Iterator<IndexEntryUpdate<IndexDescriptor>> updates = layoutUtil.randomUpdateGenerator( random );
-
-        // when
-        int count = interleaveLargeAmountOfUpdates( updaterRandom, updates );
-
-        // then
-        populator.close( true );
-        random.reset();
-        verifyUpdates( layoutUtil.randomUpdateGenerator( random ), count );
-    }
-
-    @Test
-    public void dropMustSucceedAfterSuccessfulClose() throws Exception
-    {
-        // given
-        populator.create();
-        populator.close( true );
-
-        // when
-        populator.drop();
-
-        // then
-        assertFileNotPresent();
-    }
-
-    @Test
-    public void dropMustSucceedAfterUnsuccessfulClose() throws Exception
-    {
-        // given
-        populator.create();
-        populator.close( false );
-
-        // when
-        populator.drop();
-
-        // then
-        assertFileNotPresent();
-    }
-
-    @Test
-    public void successfulCloseMustThrowWithoutPriorSuccessfulCreate() throws Exception
-    {
-        // given
-        assertFileNotPresent();
-
-        // when
-        try
-        {
-            populator.close( true );
-            fail( "Should have failed" );
-        }
-        catch ( IllegalStateException e )
-        {
-            // then good
+            return indexLayoutFactory.create();
         }
     }
 
-    @Test
-    public void unsuccessfulCloseMustSucceedWithoutSuccessfulPriorCreate() throws Exception
+    @RunWith( Parameterized.class )
+    public static class NonUniqueTest<KEY extends NativeIndexKey<KEY>, VALUE extends NativeIndexValue> extends NativeIndexPopulatorTests.NonUnique<KEY,VALUE>
     {
-        // given
-        assertFileNotPresent();
-        String failureMessage = "There is no spoon";
-        populator.markAsFailed( failureMessage );
-
-        // when
-        populator.close( false );
-
-        // then
-        assertHeader( false, failureMessage, false );
-    }
-
-    @Test
-    public void successfulCloseMustThrowAfterDrop() throws Exception
-    {
-        // given
-        populator.create();
-
-        // when
-        populator.drop();
-
-        // then
-        try
+        @Parameterized.Parameters( name = "{index} {0}" )
+        public static Collection<Object[]> data()
         {
-            populator.close( true );
-            fail( "Should have failed" );
+            return allPopulators();
         }
-        catch ( IllegalStateException e )
-        {
-            // then good
-        }
-    }
 
-    @Test
-    public void unsuccessfulCloseMustThrowAfterDrop() throws Exception
-    {
-        // given
-        populator.create();
+        @Parameterized.Parameter()
+        public String name;
 
-        // when
-        populator.drop();
+        @Parameterized.Parameter( 1 )
+        public PopulatorFactory<KEY,VALUE> populatorFactory;
 
-        // then
-        try
-        {
-            populator.close( false );
-            fail( "Should have failed" );
-        }
-        catch ( IllegalStateException e )
-        {
-            // then good
-        }
-    }
+        @Parameterized.Parameter( 2 )
+        public ValueType[] supportedTypes;
 
-    private int interleaveLargeAmountOfUpdates( Random updaterRandom,
-            Iterator<IndexEntryUpdate<IndexDescriptor>> updates ) throws IOException, IndexEntryConflictException
-    {
-        int count = 0;
-        for ( int i = 0; i < LARGE_AMOUNT_OF_UPDATES; i++ )
-        {
-            if ( updaterRandom.nextFloat() < 0.1 )
-            {
-                try ( IndexUpdater indexUpdater = populator.newPopulatingUpdater( null_property_accessor ) )
-                {
-                    int numberOfUpdaterUpdates = updaterRandom.nextInt( 100 );
-                    for ( int j = 0; j < numberOfUpdaterUpdates; j++ )
-                    {
-                        indexUpdater.process( updates.next() );
-                        count++;
-                    }
-                }
-            }
-            populator.add( Collections.singletonList( updates.next() ) );
-            count++;
-        }
-        return count;
-    }
+        @Parameterized.Parameter( 3 )
+        public IndexLayoutFactory<KEY,VALUE> indexLayoutFactory;
 
-    private void assertHeader( boolean online, String failureMessage, boolean messageTruncated ) throws IOException
-    {
-        NativeIndexHeaderReader headerReader = new NativeIndexHeaderReader();
-        try ( GBPTree<KEY,VALUE> ignored = new GBPTree<>( pageCache, getIndexFile(), layout, 0, GBPTree.NO_MONITOR,
-                headerReader, NO_HEADER_WRITER, RecoveryCleanupWorkCollector.IMMEDIATE ) )
-        {
-            if ( online )
-            {
-                assertEquals( "Index was not marked as online when expected not to be.", BYTE_ONLINE, headerReader.state );
-                assertNull( "Expected failure message to be null when marked as online.", headerReader.failureMessage );
-            }
-            else
-            {
-                assertEquals( "Index was marked as online when expected not to be.", BYTE_FAILED, headerReader.state );
-                if ( messageTruncated )
-                {
-                    assertTrue( headerReader.failureMessage.length() < failureMessage.length() );
-                    assertTrue( failureMessage.startsWith( headerReader.failureMessage ) );
-                }
-                else
-                {
-                    assertEquals( failureMessage, headerReader.failureMessage );
-                }
-            }
-        }
-    }
+        private static final StoreIndexDescriptor nonUniqueDescriptor = TestIndexDescriptorFactory.forLabel( 42, 666 ).withId( 0 );
 
-    private String longString( int length )
-    {
-        return RandomStringUtils.random( length, true, true );
-    }
+        @Override
+        NativeIndexPopulator<KEY,VALUE> createPopulator() throws IOException
+        {
+            return populatorFactory.create( pageCache, fs, getIndexFile(), layout, monitor, indexDescriptor );
+        }
 
-    private void applyInterleaved( IndexEntryUpdate<IndexDescriptor>[] updates, NativeIndexPopulator<KEY,VALUE> populator )
-            throws IOException, IndexEntryConflictException
-    {
-        boolean useUpdater = true;
-        Collection<IndexEntryUpdate<IndexDescriptor>> populatorBatch = new ArrayList<>();
-        IndexUpdater updater = populator.newPopulatingUpdater( null_property_accessor );
-        for ( IndexEntryUpdate<IndexDescriptor> update : updates )
+        @Override
+        ValueCreatorUtil<KEY,VALUE> createValueCreatorUtil()
         {
-            if ( random.nextInt( 100 ) < 20 )
-            {
-                if ( useUpdater )
-                {
-                    updater.close();
-                    populatorBatch = new ArrayList<>();
-                }
-                else
-                {
-                    populator.add( populatorBatch );
-                    updater = populator.newPopulatingUpdater( null_property_accessor );
-                }
-                useUpdater = !useUpdater;
-            }
-            if ( useUpdater )
-            {
-                updater.process( update );
-            }
-            else
-            {
-                populatorBatch.add( update );
-            }
+            return new ValueCreatorUtil<>( nonUniqueDescriptor, supportedTypes, ValueCreatorUtil.FRACTION_DUPLICATE_NON_UNIQUE );
         }
-        if ( useUpdater )
-        {
-            updater.close();
-        }
-        else
-        {
-            populator.add( populatorBatch );
-        }
-    }
 
-    private void verifyUpdates( Iterator<IndexEntryUpdate<IndexDescriptor>> indexEntryUpdateIterator, int count )
-            throws IOException
-    {
-        @SuppressWarnings( "unchecked" )
-        IndexEntryUpdate<IndexDescriptor>[] updates = new IndexEntryUpdate[count];
-        for ( int i = 0; i < count; i++ )
+        @Override
+        IndexLayout<KEY,VALUE> createLayout()
         {
-            updates[i] = indexEntryUpdateIterator.next();
-        }
-        verifyUpdates( updates );
-    }
-
-    private byte[] fileWithContent() throws IOException
-    {
-        int size = 1000;
-        fs.mkdirs( getIndexFile().getParentFile() );
-        try ( StoreChannel storeChannel = fs.create( getIndexFile() ) )
-        {
-            byte[] someBytes = new byte[size];
-            random.nextBytes( someBytes );
-            storeChannel.writeAll( ByteBuffer.wrap( someBytes ) );
-            return someBytes;
+            return indexLayoutFactory.create();
         }
     }
 }

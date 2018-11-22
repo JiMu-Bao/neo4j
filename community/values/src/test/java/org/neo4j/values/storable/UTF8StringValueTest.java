@@ -21,6 +21,7 @@ package org.neo4j.values.storable;
 
 import org.junit.jupiter.api.Test;
 
+
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.CoreMatchers.equalTo;
@@ -107,16 +108,25 @@ class UTF8StringValueTest
         {
             for ( String string2 : STRINGS )
             {
-
-                int x = stringValue( string1 ).compareTo( utf8Value( string2.getBytes( UTF_8 ) ) );
-                int y = utf8Value( string1.getBytes( UTF_8 ) ).compareTo( stringValue( string2 ) );
-                int z = utf8Value( string1.getBytes( UTF_8 ) )
-                         .compareTo( utf8Value( string2.getBytes( UTF_8 ) ) );
-
-                assertThat( Math.signum( x ), equalTo( Math.signum( y ) ) );
-                assertThat( Math.signum( x ), equalTo( Math.signum( z ) ) );
+                assertCompareTo( string1, string2 );
             }
         }
+    }
+
+    static void assertCompareTo( String string1, String string2 )
+    {
+        TextValue textValue1 = stringValue( string1 );
+        TextValue textValue2 = stringValue( string2 );
+        TextValue utf8Value1 = utf8Value( string1.getBytes( UTF_8 ) );
+        TextValue utf8Value2 = utf8Value( string2.getBytes( UTF_8 ) );
+        int a = textValue1.compareTo( textValue2 );
+        int x = textValue1.compareTo( utf8Value2 );
+        int y = utf8Value1.compareTo( textValue2 );
+        int z = utf8Value1.compareTo( utf8Value2 );
+
+        assertThat( Math.signum( a ), equalTo( Math.signum( x ) ) );
+        assertThat( Math.signum( a ), equalTo( Math.signum( y ) ) );
+        assertThat( Math.signum( a ), equalTo( Math.signum( z ) ) );
     }
 
     @Test
@@ -146,6 +156,40 @@ class UTF8StringValueTest
         assertSame( textValue.reverse(), stringValue( "ed" ) );
     }
 
+    @Test
+    void shouldHandleAdditionWithOffset()
+    {
+        // Given
+        byte[] bytes = "abcdefg".getBytes( UTF_8 );
+
+        // When
+        UTF8StringValue a = (UTF8StringValue) utf8Value( bytes, 1, 2 );
+        UTF8StringValue b = (UTF8StringValue) utf8Value( bytes, 3, 3 );
+
+        // Then
+       assertSame( a.plus( a ),  stringValue( "bcbc" ) );
+       assertSame( a.plus( b ), stringValue( "bcdef" ) );
+       assertSame( b.plus( a ), stringValue( "defbc" ) );
+       assertSame( b.plus( b ), stringValue( "defdef" ) );
+    }
+
+    @Test
+    void shouldHandleAdditionWithOffsetAndNonAscii()
+    {
+        // Given, two characters that require three bytes each
+        byte[] bytes = "ⲹ楡".getBytes( UTF_8 );
+
+        // When
+        UTF8StringValue a = (UTF8StringValue) utf8Value( bytes, 0, 3 );
+        UTF8StringValue b = (UTF8StringValue) utf8Value( bytes, 3, 3 );
+
+        // Then
+        assertSame( a.plus( a ), stringValue(  "ⲹⲹ" ) );
+        assertSame( a.plus( b ), stringValue(  "ⲹ楡" ) );
+        assertSame( b.plus( a ), stringValue(  "楡ⲹ") );
+        assertSame( b.plus( b ), stringValue( "楡楡" ) );
+    }
+
     private void assertSame( TextValue lhs, TextValue rhs )
     {
         assertThat( format( "%s.length != %s.length", lhs, rhs ), lhs.length(),
@@ -168,7 +212,7 @@ class UTF8StringValueTest
         TextValue substring = value.substring( 8, 5 );
 
         // Then
-        assertThat( substring, equalTo( StringValue.EMTPY ) );
+        assertThat( substring, equalTo( StringValue.EMPTY ) );
     }
 
     @Test
@@ -190,7 +234,7 @@ class UTF8StringValueTest
         // Given
         TextValue value = utf8Value( "hello".getBytes( UTF_8 ) );
 
-        assertThrows(IndexOutOfBoundsException.class, () -> value.substring( -4, 3 ) );
+        assertThrows( IndexOutOfBoundsException.class, () -> value.substring( -4, 3 ) );
     }
 
     @Test
@@ -200,5 +244,38 @@ class UTF8StringValueTest
         TextValue value = utf8Value( "hello".getBytes( UTF_8 ) );
 
         assertThrows( IndexOutOfBoundsException.class, () -> value.substring( 4, -3 ) );
+    }
+
+    @Test
+    void shouldHandleStringPredicatesWithOffset()
+    {
+        // Given
+        byte[] bytes = "abcdefghijklmnoprstuvxyzABCDEFGHIJKLMNOPRSTUVXYZ".getBytes( UTF_8 );
+
+        for ( int offset = 0; offset <= bytes.length; offset++ )
+        {
+            for ( int length = 0; length < bytes.length - offset; length++ )
+            {
+                TextValue value = utf8Value( bytes, offset, length );
+
+                for ( int otherOffset = 0; otherOffset <= bytes.length; otherOffset++ )
+                {
+                    for ( int otherLength = 0; otherLength < bytes.length - otherOffset; otherLength++ )
+                    {
+                        TextValue other = utf8Value( bytes, otherOffset, otherLength );
+                        assertThat( value.startsWith( other ),
+                                equalTo( otherLength == 0 || otherOffset == offset && otherLength <= length ) );
+                        assertThat( value.endsWith( other ),
+                                equalTo( otherLength == 0 ||
+                                         otherOffset >= offset && otherLength == length + offset - otherOffset ) );
+                        assertThat( value.contains( other ),
+                                equalTo( otherLength == 0 ||
+                                         otherOffset >= offset && otherLength <= length + offset - otherOffset ) );
+
+                    }
+                }
+
+            }
+        }
     }
 }

@@ -19,9 +19,10 @@
  */
 package org.neo4j.cypher.internal.runtime.interpreted
 
+import org.neo4j.cypher.internal.v3_5.logical.plans.CachedNodeProperty
 import org.opencypher.v9_0.util.InternalException
 import org.neo4j.values.AnyValue
-import org.neo4j.values.storable.Values
+import org.neo4j.values.storable.{Value, Values}
 import org.neo4j.values.virtual._
 
 import scala.collection.mutable.{Map => MutableMap}
@@ -30,9 +31,13 @@ import scala.collection.{Iterator, immutable}
 object ExecutionContext {
   def empty: ExecutionContext = apply()
 
-  def from(x: (String, AnyValue)*): ExecutionContext = apply().set(x)
+  def from(x: (String, AnyValue)*): ExecutionContext = {
+    val context = empty
+    context.set(x)
+    context
+  }
 
-  def apply(m: MutableMap[String, AnyValue] = MutableMaps.empty) = MapExecutionContext(m)
+  def apply(m: MutableMap[String, AnyValue] = MutableMaps.empty): MapExecutionContext = new MapExecutionContext(m, null)
 }
 
 trait ExecutionContext extends MutableMap[String, AnyValue] {
@@ -40,18 +45,21 @@ trait ExecutionContext extends MutableMap[String, AnyValue] {
   def copyFrom(input: ExecutionContext, nLongs: Int, nRefs: Int): Unit
   def setLongAt(offset: Int, value: Long): Unit
   def getLongAt(offset: Int): Long
-  def longs(): Array[Long]
 
   def setRefAt(offset: Int, value: AnyValue): Unit
   def getRefAt(offset: Int): AnyValue
-  def refs(): Array[AnyValue]
 
-  def set(newEntries: Seq[(String, AnyValue)]): ExecutionContext
-  def set(key: String, value: AnyValue): ExecutionContext
-  def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue): ExecutionContext
-  def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue, key3: String, value3: AnyValue): ExecutionContext
-  def mergeWith(other: ExecutionContext): ExecutionContext
+  def set(newEntries: Seq[(String, AnyValue)]): Unit
+  def set(key: String, value: AnyValue): Unit
+  def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue): Unit
+  def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue, key3: String, value3: AnyValue): Unit
+  def mergeWith(other: ExecutionContext): Unit
   def createClone(): ExecutionContext
+
+  def setCachedProperty(key: CachedNodeProperty, value: Value): Unit
+  def setCachedPropertyAt(offset: Int, value: Value): Unit
+  def getCachedProperty(key: CachedNodeProperty): Value
+  def getCachedPropertyAt(offset: Int): Value
 
   def copyWith(key: String, value: AnyValue): ExecutionContext
   def copyWith(key1: String, value1: AnyValue, key2: String, value2: AnyValue): ExecutionContext
@@ -65,7 +73,7 @@ trait ExecutionContext extends MutableMap[String, AnyValue] {
   def isNull(key: String): Boolean
 }
 
-case class MapExecutionContext(m: MutableMap[String, AnyValue])
+class MapExecutionContext(private val m: MutableMap[String, AnyValue], private var cachedProperties: MutableMap[CachedNodeProperty, Value] = null)
   extends ExecutionContext {
 
   override def copyTo(target: ExecutionContext, fromLongOffset: Int = 0, fromRefOffset: Int = 0, toLongOffset: Int = 0, toRefOffset: Int = 0): Unit = fail()
@@ -74,13 +82,11 @@ case class MapExecutionContext(m: MutableMap[String, AnyValue])
 
   override def setLongAt(offset: Int, value: Long): Unit = fail()
   override def getLongAt(offset: Int): Long = fail()
-  override def longs(): Array[Long] = fail()
 
   override def setRefAt(offset: Int, value: AnyValue): Unit = fail()
   override def getRefAt(offset: Int): AnyValue = fail()
-  override def refs(): Array[AnyValue] = fail()
 
-  private def fail(): Nothing = throw new InternalException("Tried using a map context as a primitive context")
+  private def fail(): Nothing = throw new InternalException("Tried using a map context as a slotted context")
 
   override def get(key: String): Option[AnyValue] = m.get(key)
 
@@ -88,8 +94,18 @@ case class MapExecutionContext(m: MutableMap[String, AnyValue])
 
   override def size: Int = m.size
 
-  override def mergeWith(other: ExecutionContext): ExecutionContext = other match {
-    case MapExecutionContext(otherMap) => copy(m = m ++ otherMap)
+  override def mergeWith(other: ExecutionContext): Unit = other match {
+    case otherMapCtx: MapExecutionContext =>
+      m ++= otherMapCtx.m
+      if (otherMapCtx.cachedProperties != null) {
+        if (cachedProperties == null) {
+          cachedProperties = otherMapCtx.cachedProperties.clone()
+        } else {
+          cachedProperties ++= otherMapCtx.cachedProperties
+        }
+      } else {
+        //otherMapCtx.cachedProperties is null so do nothing
+      }
     case _ => fail()
   }
 
@@ -104,51 +120,53 @@ case class MapExecutionContext(m: MutableMap[String, AnyValue])
 
   override def toMap[T, U](implicit ev: (String, AnyValue) <:< (T, U)): immutable.Map[T, U] = m.toMap(ev)
 
-  override def set(newEntries: Seq[(String, AnyValue)]): MapExecutionContext.this.type =
-    createWithNewMap(m.clone() ++= newEntries)
+  override def set(newEntries: Seq[(String, AnyValue)]): Unit =
+    m ++= newEntries
 
   // This may seem silly but it has measurable impact in tight loops
 
-  override def set(key: String, value: AnyValue): MapExecutionContext.this.type = {
+  override def set(key: String, value: AnyValue): Unit =
+    m.put(key, value)
+
+  override def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue): Unit = {
+    m.put(key1, value1)
+    m.put(key2, value2)
+  }
+
+  override def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue, key3: String, value3: AnyValue): Unit = {
+    m.put(key1, value1)
+    m.put(key2, value2)
+    m.put(key3, value3)
+  }
+
+  override def copyWith(key: String, value: AnyValue): ExecutionContext = {
     val newMap = m.clone()
     newMap.put(key, value)
-    createWithNewMap(newMap)
+    cloneFromMap(newMap)
   }
 
-  override def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue): MapExecutionContext.this.type = {
+  override def copyWith(key1: String, value1: AnyValue, key2: String, value2: AnyValue): ExecutionContext = {
     val newMap = m.clone()
     newMap.put(key1, value1)
     newMap.put(key2, value2)
-    createWithNewMap(newMap)
-  }
-
-  override def set(key1: String, value1: AnyValue, key2: String, value2: AnyValue, key3: String, value3: AnyValue): MapExecutionContext.this.type = {
-    val newMap = m.clone()
-    newMap.put(key1, value1)
-    newMap.put(key2, value2)
-    newMap.put(key3, value3)
-    createWithNewMap(newMap)
-  }
-
-  override def copyWith(key: String, value: AnyValue): MapExecutionContext.this.type =
-    set(key, value)
-
-  override def copyWith(key1: String, value1: AnyValue, key2: String, value2: AnyValue): MapExecutionContext.this.type = {
-    set(key1, value1, key2, value2)
+    cloneFromMap(newMap)
   }
 
   override def copyWith(key1: String, value1: AnyValue,
                         key2: String, value2: AnyValue,
-                        key3: String, value3: AnyValue): ExecutionContext =
-    set(key1, value1, key2, value2, key3, value3)
-
-  override def copyWith(newEntries: Seq[(String, AnyValue)]): ExecutionContext = set(newEntries)
-
-  override def createClone(): ExecutionContext = createWithNewMap(m.clone())
-
-  protected def createWithNewMap(newMap: MutableMap[String, AnyValue]): this.type = {
-    copy(m = newMap).asInstanceOf[this.type]
+                        key3: String, value3: AnyValue): ExecutionContext = {
+    val newMap = m.clone()
+    newMap.put(key1, value1)
+    newMap.put(key2, value2)
+    newMap.put(key3, value3)
+    cloneFromMap(newMap)
   }
+
+  override def copyWith(newEntries: Seq[(String, AnyValue)]): ExecutionContext = {
+    cloneFromMap(m.clone() ++ newEntries)
+  }
+
+  override def createClone(): ExecutionContext = cloneFromMap(m.clone())
 
   override def -=(key: String): this.type = {
     m.remove(key)
@@ -172,4 +190,27 @@ case class MapExecutionContext(m: MutableMap[String, AnyValue])
       case Some(Values.NO_VALUE) => true
       case _ => false
     }
+
+  override def setCachedProperty(key: CachedNodeProperty, value: Value): Unit = {
+    if (cachedProperties == null) {
+      cachedProperties = MutableMap.empty
+    }
+    cachedProperties.put(key, value)
+  }
+
+  override def setCachedPropertyAt(offset: Int, value: Value): Unit = fail()
+
+  override def getCachedProperty(key: CachedNodeProperty): Value = {
+    if (cachedProperties == null) {
+      throw new NoSuchElementException("key not found: " + key)
+    }
+    cachedProperties(key)
+  }
+
+  override def getCachedPropertyAt(offset: Int): Value = fail()
+
+  private def cloneFromMap(newMap: MutableMap[String, AnyValue]): ExecutionContext = {
+    val newCachedProperties = if (cachedProperties == null) null else cachedProperties.clone()
+    new MapExecutionContext(newMap, newCachedProperties)
+  }
 }

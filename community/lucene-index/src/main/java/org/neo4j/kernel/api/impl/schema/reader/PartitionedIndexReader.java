@@ -84,7 +84,8 @@ public class PartitionedIndexReader extends AbstractIndexReader
     }
 
     @Override
-    public void query( IndexProgressor.NodeValueClient client, IndexOrder indexOrder, IndexQuery... query ) throws IndexNotApplicableKernelException
+    public void query( IndexProgressor.NodeValueClient client, IndexOrder indexOrder, boolean needsValues, IndexQuery... query )
+            throws IndexNotApplicableKernelException
     {
         try
         {
@@ -93,14 +94,14 @@ public class PartitionedIndexReader extends AbstractIndexReader
             {
                 try
                 {
-                    reader.query( bridgingIndexProgressor, indexOrder, query );
+                    reader.query( bridgingIndexProgressor, indexOrder, needsValues, query );
                 }
                 catch ( IndexNotApplicableKernelException e )
                 {
                     throw new InnerException( e );
                 }
             } );
-            client.initialize( descriptor, bridgingIndexProgressor, query );
+            client.initialize( descriptor, bridgingIndexProgressor, query, indexOrder, needsValues );
         }
         catch ( InnerException e )
         {
@@ -141,10 +142,10 @@ public class PartitionedIndexReader extends AbstractIndexReader
     }
 
     @Override
-    public long countIndexedNodes( long nodeId, Value... propertyValues )
+    public long countIndexedNodes( long nodeId, int[] propertyKeyIds, Value... propertyValues )
     {
         return indexReaders.parallelStream()
-                .mapToLong( reader -> reader.countIndexedNodes( nodeId, propertyValues ) )
+                .mapToLong( reader -> reader.countIndexedNodes( nodeId, propertyKeyIds, propertyValues ) )
                 .sum();
     }
 

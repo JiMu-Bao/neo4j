@@ -20,6 +20,7 @@
 package org.neo4j.commandline.dbms;
 
 import java.io.Closeable;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -32,19 +33,27 @@ import org.neo4j.commandline.admin.AdminCommand;
 import org.neo4j.commandline.admin.CommandFailed;
 import org.neo4j.commandline.admin.IncorrectUsage;
 import org.neo4j.commandline.arguments.Arguments;
-import org.neo4j.commandline.arguments.common.Database;
 import org.neo4j.dbms.archive.Dumper;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
+import org.neo4j.io.fs.DefaultFileSystemAbstraction;
+import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
+import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.StoreLockException;
 import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.impl.pagecache.ConfigurableStandalonePageCacheFactory;
+import org.neo4j.kernel.impl.recovery.RecoveryRequiredChecker;
 import org.neo4j.kernel.impl.util.Validators;
-import org.neo4j.kernel.internal.locker.StoreLocker;
+import org.neo4j.kernel.monitoring.Monitors;
+import org.neo4j.scheduler.JobScheduler;
 
 import static java.lang.String.format;
 import static org.neo4j.commandline.Util.canonicalPath;
 import static org.neo4j.commandline.arguments.common.Database.ARG_DATABASE;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.database_path;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.logical_logs_location;
+import static org.neo4j.helpers.Strings.joinAsLines;
+import static org.neo4j.kernel.impl.scheduler.JobSchedulerFactory.createInitialisedScheduler;
 
 public class DumpCommand implements AdminCommand
 {
@@ -72,20 +81,22 @@ public class DumpCommand implements AdminCommand
 
         Config config = buildConfig( database );
         Path databaseDirectory = canonicalPath( getDatabaseDirectory( config ) );
+        DatabaseLayout databaseLayout = DatabaseLayout.of( databaseDirectory.toFile() );
         Path transactionLogsDirectory = canonicalPath( getTransactionalLogsDirectory( config ) );
 
         try
         {
-            Validators.CONTAINS_EXISTING_DATABASE.validate( databaseDirectory.toFile() );
+            Validators.CONTAINS_EXISTING_DATABASE.validate( databaseLayout.databaseDirectory() );
         }
         catch ( IllegalArgumentException e )
         {
             throw new CommandFailed( "database does not exist: " + database, e );
         }
 
-        try ( Closeable ignored = StoreLockChecker.check( databaseDirectory ) )
+        try ( Closeable ignored = StoreLockChecker.check( databaseLayout.getStoreLayout() ) )
         {
-            dump( database, databaseDirectory, transactionLogsDirectory, archive );
+            checkDbState( databaseLayout, config );
+            dump( database, databaseLayout, transactionLogsDirectory, archive );
         }
         catch ( StoreLockException e )
         {
@@ -101,12 +112,12 @@ public class DumpCommand implements AdminCommand
         }
     }
 
-    private Path getDatabaseDirectory( Config config )
+    private static Path getDatabaseDirectory( Config config )
     {
         return config.get( database_path ).toPath();
     }
 
-    private Path getTransactionalLogsDirectory( Config config )
+    private static Path getTransactionalLogsDirectory( Config config )
     {
         return config.get( logical_logs_location ).toPath();
     }
@@ -120,17 +131,19 @@ public class DumpCommand implements AdminCommand
                 .build();
     }
 
-    private Path calculateArchive( String database, Path to )
+    private static Path calculateArchive( String database, Path to )
     {
         return Files.isDirectory( to ) ? to.resolve( database + ".dump" ) : to;
     }
 
-    private void dump( String database, Path databaseDirectory, Path transactionalLogsDirectory, Path archive )
+    private void dump( String database, DatabaseLayout databaseLayout, Path transactionalLogsDirectory, Path archive )
             throws CommandFailed
     {
+        Path databasePath = databaseLayout.databaseDirectory().toPath();
         try
         {
-            dumper.dump( databaseDirectory, transactionalLogsDirectory, archive, this::isStoreLock );
+            File storeLockFile = databaseLayout.getStoreLayout().storeLockFile();
+            dumper.dump( databasePath, transactionalLogsDirectory, archive, path -> Objects.equals( path.getFileName().toString(), storeLockFile.getName() ) );
         }
         catch ( FileAlreadyExistsException e )
         {
@@ -138,7 +151,7 @@ public class DumpCommand implements AdminCommand
         }
         catch ( NoSuchFileException e )
         {
-            if ( Paths.get( e.getMessage() ).toAbsolutePath().equals( databaseDirectory.toAbsolutePath() ) )
+            if ( Paths.get( e.getMessage() ).toAbsolutePath().equals( databasePath ) )
             {
                 throw new CommandFailed( "database does not exist: " + database, e );
             }
@@ -150,12 +163,32 @@ public class DumpCommand implements AdminCommand
         }
     }
 
-    private boolean isStoreLock( Path path )
+    private static void checkDbState( DatabaseLayout databaseLayout, Config additionalConfiguration ) throws CommandFailed
     {
-        return Objects.equals( path.getFileName().toString(), StoreLocker.STORE_LOCK_FILENAME );
+        try ( FileSystemAbstraction fileSystem = new DefaultFileSystemAbstraction();
+                JobScheduler jobScheduler = createInitialisedScheduler();
+                PageCache pageCache = ConfigurableStandalonePageCacheFactory.createPageCache( fileSystem, additionalConfiguration, jobScheduler ) )
+        {
+            RecoveryRequiredChecker requiredChecker = new RecoveryRequiredChecker( fileSystem, pageCache, additionalConfiguration, new Monitors() );
+            if ( requiredChecker.isRecoveryRequiredAt( databaseLayout ) )
+            {
+                throw new CommandFailed( joinAsLines(
+                        "Active logical log detected, this might be a source of inconsistencies.",
+                        "Please recover database before running the dump.",
+                        "To perform recovery please start database and perform clean shutdown." ) );
+            }
+        }
+        catch ( CommandFailed cf )
+        {
+            throw cf;
+        }
+        catch ( Exception e )
+        {
+            throw new CommandFailed( "Failure when checking for recovery state: '%s'." + e.getMessage(), e );
+        }
     }
 
-    private void wrapIOException( IOException e ) throws CommandFailed
+    private static void wrapIOException( IOException e ) throws CommandFailed
     {
         throw new CommandFailed(
                 format( "unable to dump database: %s: %s", e.getClass().getSimpleName(), e.getMessage() ), e );

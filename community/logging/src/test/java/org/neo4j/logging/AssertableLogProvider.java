@@ -764,7 +764,7 @@ public class AssertableLogProvider extends AbstractLogProvider<Log> implements T
         }
     }
 
-    public void assertContainsExactlyOneMessageMatching( Matcher<String> messageMatcher )
+    public final void assertContainsExactlyOneMessageMatching( Matcher<String> messageMatcher )
     {
         boolean found = false;
         synchronized ( logCalls )
@@ -782,7 +782,7 @@ public class AssertableLogProvider extends AbstractLogProvider<Log> implements T
                         StringDescription description = new StringDescription();
                         description.appendDescriptionOf( messageMatcher );
                         fail( format( "Expected exactly one log statement with message as %s, but multiple found. Actual log calls were:%n%s",
-                                 description.toString(), serialize( logCalls.iterator() ) ) );
+                                description.toString(), serialize( logCalls.iterator() ) ) );
                     }
                 }
             }

@@ -36,6 +36,7 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.TrustManagerFactory;
 
+import org.neo4j.logging.Log;
 import org.neo4j.logging.LogProvider;
 
 public class SslPolicy
@@ -53,7 +54,7 @@ public class SslPolicy
     private final SslProvider sslProvider;
 
     private final boolean verifyHostname;
-    private final LogProvider logProvider;
+    private final Log log;
 
     public SslPolicy( PrivateKey privateKey, X509Certificate[] keyCertChain, List<String> tlsVersions, List<String> ciphers, ClientAuth clientAuth,
             TrustManagerFactory trustManagerFactory, SslProvider sslProvider, boolean verifyHostname, LogProvider logProvider )
@@ -66,7 +67,7 @@ public class SslPolicy
         this.trustManagerFactory = trustManagerFactory;
         this.sslProvider = sslProvider;
         this.verifyHostname = verifyHostname;
-        this.logProvider = logProvider;
+        this.log = logProvider.getLog( SslPolicy.class );
     }
 
     public SslContext nettyServerContext() throws SSLException
@@ -112,7 +113,7 @@ public class SslPolicy
         return nettyServerHandler( channel, nettyServerContext() );
     }
 
-    private ChannelHandler nettyServerHandler( Channel channel, SslContext sslContext ) throws SSLException
+    private ChannelHandler nettyServerHandler( Channel channel, SslContext sslContext )
     {
         SSLEngine sslEngine = sslContext.newEngine( channel.alloc() );
         return new SslHandler( sslEngine );
@@ -124,9 +125,9 @@ public class SslPolicy
         return nettyClientHandler( channel, nettyClientContext() );
     }
 
-    ChannelHandler nettyClientHandler( Channel channel, SslContext sslContext ) throws SSLException
+    ChannelHandler nettyClientHandler( Channel channel, SslContext sslContext )
     {
-        return new OnConnectSslHandler( channel, sslContext, true, verifyHostname, tlsVersions );
+        return new ClientSideOnConnectSslHandler( channel, sslContext, verifyHostname, tlsVersions );
     }
 
     public PrivateKey privateKey()
@@ -145,6 +146,7 @@ public class SslPolicy
         try
         {
             keyStore = KeyStore.getInstance( KeyStore.getDefaultType() );
+            log.debug( "Keystore loaded is of type " + keyStore.getClass().getName() );
             keyStore.load( null, keyStorePass );
             keyStore.setKeyEntry( "key", privateKey, privateKeyPass, keyCertChain );
         }

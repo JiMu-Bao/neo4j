@@ -21,11 +21,16 @@ package org.neo4j.kernel.impl.index.schema;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.HashMap;
+import java.util.Map;
 
+import org.neo4j.gis.spatial.index.curves.SpaceFillingCurveConfiguration;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
-import org.neo4j.index.internal.gbptree.Layout;
+import org.neo4j.index.internal.gbptree.GBPTree;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
 import org.neo4j.internal.kernel.api.IndexCapability;
+import org.neo4j.internal.kernel.api.IndexLimitation;
 import org.neo4j.internal.kernel.api.IndexOrder;
 import org.neo4j.internal.kernel.api.IndexValueCapability;
 import org.neo4j.internal.kernel.api.schema.IndexProviderDescriptor;
@@ -34,12 +39,21 @@ import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.api.index.IndexAccessor;
 import org.neo4j.kernel.api.index.IndexDirectoryStructure;
 import org.neo4j.kernel.api.index.IndexPopulator;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
+import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.impl.index.schema.config.ConfiguredSpaceFillingCurveSettingsCache;
+import org.neo4j.kernel.impl.index.schema.config.IndexSpecificSpaceFillingCurveSettingsCache;
+import org.neo4j.kernel.impl.index.schema.config.SpaceFillingCurveSettings;
+import org.neo4j.kernel.impl.index.schema.config.SpaceFillingCurveSettingsReader;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
+import org.neo4j.util.FeatureToggles;
+import org.neo4j.values.storable.CoordinateReferenceSystem;
 import org.neo4j.values.storable.ValueCategory;
 
+import static org.neo4j.graphdb.factory.GraphDatabaseSettings.SchemaIndex.NATIVE_BTREE10;
+import static org.neo4j.kernel.impl.index.schema.config.SpaceFillingCurveSettingsFactory.getConfiguredSpaceFillingCurveConfiguration;
+
 /**
- * Single-value all-in-one native index
+ * Native index able to handle all value types in a single {@link GBPTree}. Single-key as well as composite-key is supported.
  *
  * A composite index query have one predicate per slot / column.
  * The predicate comes in the form of an index query. Any of "exact", "range" or "exist".
@@ -89,58 +103,135 @@ import org.neo4j.values.storable.ValueCategory;
  * We COULD allow this query and do filter during scan instead and take the extra cost into account when planning queries.
  * As of writing this, there is no such filtering implementation.
  */
-public class GenericNativeIndexProvider extends NativeIndexProvider<CompositeGenericKey,NativeIndexValue>
+public class GenericNativeIndexProvider extends NativeIndexProvider<GenericKey,NativeIndexValue,GenericLayout>
 {
-    public static final GraphDatabaseSettings.SchemaIndex SCHEMA_INDEX = GraphDatabaseSettings.SchemaIndex.NATIVE_BTREE10;
-    public static final String KEY = SCHEMA_INDEX.providerName();
-    public static final IndexProviderDescriptor DESCRIPTOR = new IndexProviderDescriptor( KEY, SCHEMA_INDEX.providerVersion() );
+    public static final String KEY = NATIVE_BTREE10.providerKey();
+    public static final IndexProviderDescriptor DESCRIPTOR = new IndexProviderDescriptor( KEY, NATIVE_BTREE10.providerVersion() );
+    public static final IndexCapability CAPABILITY = new GenericIndexCapability();
+    static final boolean parallelPopulation = FeatureToggles.flag( GenericNativeIndexProvider.class, "parallelPopulation", false );
 
-    // TODO implement
-    public static final IndexCapability CAPABILITY = new IndexCapability()
+    /**
+     * Cache of all setting for various specific CRS's found in the config at instantiation of this provider.
+     * The config is read once and all relevant CRS configs cached here.
+     */
+    private final ConfiguredSpaceFillingCurveSettingsCache configuredSettings;
+
+    /**
+     * A space filling curve configuration used when reading spatial index values.
+     */
+    private final SpaceFillingCurveConfiguration configuration;
+    private final boolean archiveFailedIndex;
+
+    GenericNativeIndexProvider( IndexDirectoryStructure.Factory directoryStructureFactory, PageCache pageCache, FileSystemAbstraction fs, Monitor monitor,
+            RecoveryCleanupWorkCollector recoveryCleanupWorkCollector, boolean readOnly, Config config )
     {
+        super( DESCRIPTOR, directoryStructureFactory, pageCache, fs, monitor, recoveryCleanupWorkCollector, readOnly );
+
+        this.configuredSettings = new ConfiguredSpaceFillingCurveSettingsCache( config );
+        this.configuration = getConfiguredSpaceFillingCurveConfiguration( config );
+        this.archiveFailedIndex = config.get( GraphDatabaseSettings.archive_failed_index );
+    }
+
+    @Override
+    GenericLayout layout( StoreIndexDescriptor descriptor, File storeFile )
+    {
+        try
+        {
+            int numberOfSlots = descriptor.properties().length;
+            Map<CoordinateReferenceSystem,SpaceFillingCurveSettings> settings = new HashMap<>();
+            if ( storeFile != null && fs.fileExists( storeFile ) )
+            {
+                // The index file exists and is sane so use it to read header information from.
+                GBPTree.readHeader( pageCache, storeFile, new NativeIndexHeaderReader( new SpaceFillingCurveSettingsReader( settings ) ) );
+            }
+            return new GenericLayout( numberOfSlots, new IndexSpecificSpaceFillingCurveSettingsCache( configuredSettings, settings ) );
+        }
+        catch ( IOException e )
+        {
+            throw new UncheckedIOException( e );
+        }
+    }
+
+    @Override
+    protected IndexPopulator newIndexPopulator( File storeFile, GenericLayout layout, StoreIndexDescriptor descriptor )
+    {
+        if ( parallelPopulation )
+        {
+            return new ParallelNativeIndexPopulator<>( storeFile, layout, file ->
+                    new GenericNativeIndexPopulator( pageCache, fs, file, layout, monitor, descriptor, layout.getSpaceFillingCurveSettings(),
+                            directoryStructure(), configuration, archiveFailedIndex, !file.equals( storeFile ) ) );
+        }
+        else
+        {
+            return new WorkSyncedNativeIndexPopulator<>(
+                    new GenericNativeIndexPopulator( pageCache, fs, storeFile, layout, monitor, descriptor, layout.getSpaceFillingCurveSettings(),
+                            directoryStructure(), configuration, archiveFailedIndex, false ) );
+        }
+    }
+
+    @Override
+    protected IndexAccessor newIndexAccessor( File storeFile, GenericLayout layout, StoreIndexDescriptor descriptor )
+    {
+        return new GenericNativeIndexAccessor( pageCache, fs, storeFile, layout, recoveryCleanupWorkCollector, monitor, descriptor,
+                layout.getSpaceFillingCurveSettings(), directoryStructure(), configuration );
+    }
+
+    @Override
+    public IndexCapability getCapability( StoreIndexDescriptor descriptor )
+    {
+        return CAPABILITY;
+    }
+
+    private static class GenericIndexCapability implements IndexCapability
+    {
+        private final IndexLimitation[] limitations = {IndexLimitation.SLOW_CONTAINS};
+
         @Override
         public IndexOrder[] orderCapability( ValueCategory... valueCategories )
         {
-            return new IndexOrder[0];
+            if ( supportOrdering( valueCategories ) )
+            {
+                return IndexCapability.ORDER_BOTH;
+            }
+            return IndexCapability.ORDER_NONE;
         }
 
         @Override
         public IndexValueCapability valueCapability( ValueCategory... valueCategories )
         {
-            return null;
+            return IndexValueCapability.YES;
         }
-    };
 
-    public GenericNativeIndexProvider( int priority, IndexDirectoryStructure.Factory directoryStructureFactory, PageCache pageCache,
-            FileSystemAbstraction fs, Monitor monitor, RecoveryCleanupWorkCollector recoveryCleanupWorkCollector, boolean readOnly )
-    {
-        super( DESCRIPTOR, priority, directoryStructureFactory, pageCache, fs, monitor, recoveryCleanupWorkCollector, readOnly );
-    }
+        @Override
+        public boolean isFulltextIndex()
+        {
+            return false;
+        }
 
-    @Override
-    Layout<CompositeGenericKey,NativeIndexValue> layout( StoreIndexDescriptor descriptor )
-    {
-        int numberOfSlots = descriptor.properties().length;
-        return new GenericLayout( numberOfSlots );
-    }
+        @Override
+        public boolean isEventuallyConsistent()
+        {
+            return false;
+        }
 
-    @Override
-    protected IndexPopulator newIndexPopulator( File storeFile, Layout<CompositeGenericKey,NativeIndexValue> layout, StoreIndexDescriptor descriptor,
-            IndexSamplingConfig samplingConfig )
-    {
-        return new GenericNativeIndexPopulator( pageCache, fs, storeFile, layout, monitor, descriptor, samplingConfig );
-    }
+        private boolean supportOrdering( ValueCategory[] valueCategories )
+        {
+            for ( ValueCategory valueCategory : valueCategories )
+            {
+                if ( valueCategory == ValueCategory.GEOMETRY ||
+                     valueCategory == ValueCategory.GEOMETRY_ARRAY ||
+                     valueCategory == ValueCategory.UNKNOWN )
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
 
-    @Override
-    protected IndexAccessor newIndexAccessor( File storeFile, Layout<CompositeGenericKey,NativeIndexValue> layout, StoreIndexDescriptor descriptor,
-            IndexSamplingConfig samplingConfig ) throws IOException
-    {
-        return new GenericNativeIndexAccessor( pageCache, fs, storeFile, layout, recoveryCleanupWorkCollector, monitor, descriptor, samplingConfig );
-    }
-
-    @Override
-    public IndexCapability getCapability()
-    {
-        return CAPABILITY;
+        @Override
+        public IndexLimitation[] limitations()
+        {
+            return limitations;
+        }
     }
 }

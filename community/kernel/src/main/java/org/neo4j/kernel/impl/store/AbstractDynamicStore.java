@@ -66,7 +66,8 @@ public abstract class AbstractDynamicStore extends CommonAbstractStore<DynamicRe
         implements DynamicRecordAllocator
 {
     public AbstractDynamicStore(
-            File fileName,
+            File file,
+            File idFile,
             Config conf,
             IdType idType,
             IdGeneratorFactory idGeneratorFactory,
@@ -78,7 +79,7 @@ public abstract class AbstractDynamicStore extends CommonAbstractStore<DynamicRe
             String storeVersion,
             OpenOption... openOptions )
     {
-        super( fileName, conf, idType, idGeneratorFactory, pageCache, logProvider, typeDescriptor,
+        super( file, idFile, conf, idType, idGeneratorFactory, pageCache, logProvider, typeDescriptor,
                 recordFormat, new DynamicStoreHeaderFormat( dataSizeFromConfiguration, recordFormat ),
                 storeVersion, openOptions );
     }
@@ -194,7 +195,7 @@ public abstract class AbstractDynamicStore extends CommonAbstractStore<DynamicRe
     @Override
     public String toString()
     {
-        return super.toString() + "[fileName:" + storageFileName.getName() +
+        return super.toString() + "[fileName:" + storageFile.getName() +
                 ", blockSize:" + getRecordDataSize() + "]";
     }
 

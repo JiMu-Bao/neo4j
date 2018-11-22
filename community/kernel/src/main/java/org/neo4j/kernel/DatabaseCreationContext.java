@@ -26,10 +26,13 @@ import org.neo4j.graphdb.DependencyResolver;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
 import org.neo4j.internal.kernel.api.TokenNameLookup;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.IOLimiter;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.tracing.cursor.context.VersionContextSupplier;
 import org.neo4j.kernel.api.explicitindex.AutoIndexing;
+import org.neo4j.kernel.availability.DatabaseAvailability;
+import org.neo4j.kernel.availability.DatabaseAvailabilityGuard;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.extension.KernelExtensionFactory;
 import org.neo4j.kernel.impl.api.CommitProcessFactory;
@@ -38,12 +41,13 @@ import org.neo4j.kernel.impl.api.SchemaWriteGuard;
 import org.neo4j.kernel.impl.api.index.IndexingService;
 import org.neo4j.kernel.impl.constraints.ConstraintSemantics;
 import org.neo4j.kernel.impl.core.TokenHolders;
+import org.neo4j.kernel.impl.coreapi.CoreAPIAvailabilityGuard;
 import org.neo4j.kernel.impl.factory.AccessCapability;
 import org.neo4j.kernel.impl.factory.DatabaseInfo;
 import org.neo4j.kernel.impl.factory.GraphDatabaseFacade;
 import org.neo4j.kernel.impl.index.IndexConfigStore;
+import org.neo4j.kernel.impl.locking.Locks;
 import org.neo4j.kernel.impl.locking.StatementLocksFactory;
-import org.neo4j.kernel.impl.logging.LogService;
 import org.neo4j.kernel.impl.proc.Procedures;
 import org.neo4j.kernel.impl.query.QueryEngineProvider;
 import org.neo4j.kernel.impl.storageengine.impl.recordstorage.id.IdController;
@@ -58,6 +62,7 @@ import org.neo4j.kernel.internal.DatabaseHealth;
 import org.neo4j.kernel.internal.TransactionEventHandlers;
 import org.neo4j.kernel.monitoring.Monitors;
 import org.neo4j.kernel.monitoring.tracing.Tracers;
+import org.neo4j.logging.internal.LogService;
 import org.neo4j.scheduler.JobScheduler;
 import org.neo4j.time.SystemNanoClock;
 
@@ -65,7 +70,7 @@ public interface DatabaseCreationContext
 {
     String getDatabaseName();
 
-    File getDatabaseDirectory();
+    DatabaseLayout getDatabaseLayout();
 
     Config getConfig();
 
@@ -80,6 +85,8 @@ public interface DatabaseCreationContext
     DependencyResolver getGlobalDependencies();
 
     TokenHolders getTokenHolders();
+
+    Locks getLocks();
 
     StatementLocksFactory getStatementLocksFactory();
 
@@ -119,7 +126,9 @@ public interface DatabaseCreationContext
 
     IOLimiter getIoLimiter();
 
-    AvailabilityGuard getAvailabilityGuard();
+    DatabaseAvailabilityGuard getDatabaseAvailabilityGuard();
+
+    CoreAPIAvailabilityGuard getCoreAPIAvailabilityGuard();
 
     SystemNanoClock getClock();
 
@@ -144,4 +153,6 @@ public interface DatabaseCreationContext
     GraphDatabaseFacade getFacade();
 
     Iterable<QueryEngineProvider> getEngineProviders();
+
+    DatabaseAvailability getDatabaseAvailability();
 }

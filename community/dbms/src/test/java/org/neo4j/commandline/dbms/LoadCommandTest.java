@@ -43,11 +43,13 @@ import org.neo4j.commandline.admin.IncorrectUsage;
 import org.neo4j.commandline.admin.Usage;
 import org.neo4j.dbms.archive.IncorrectFormat;
 import org.neo4j.dbms.archive.Loader;
-import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.config.Setting;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.ArrayUtil;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseLayout;
+import org.neo4j.io.layout.StoreLayout;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.internal.locker.StoreLocker;
 import org.neo4j.test.extension.Inject;
@@ -196,9 +198,10 @@ class LoadCommandTest
     {
         Path databaseDirectory = homeDir.resolve( "data/databases/foo.db" );
         Files.createDirectories( databaseDirectory );
+        StoreLayout storeLayout = DatabaseLayout.of( databaseDirectory.toFile() ).getStoreLayout();
 
         try ( FileSystemAbstraction fileSystem = new DefaultFileSystemAbstraction();
-              StoreLocker locker = new StoreLocker( fileSystem, databaseDirectory.getParent().toFile() ) )
+              StoreLocker locker = new StoreLocker( fileSystem, storeLayout ) )
         {
             locker.checkLock();
             CommandFailed commandFailed = assertThrows( CommandFailed.class, () -> execute( "foo.db", "--force" ) );
@@ -209,7 +212,7 @@ class LoadCommandTest
     @Test
     void shouldDefaultToGraphDb() throws Exception
     {
-        Path databaseDir = homeDir.resolve( "data/databases/" + DatabaseManager.DEFAULT_DATABASE_NAME );
+        Path databaseDir = homeDir.resolve( "data/databases/" + GraphDatabaseSettings.DEFAULT_DATABASE_NAME );
         Files.createDirectories( databaseDir );
 
         new LoadCommand( homeDir, configDir, loader ).execute( new String[]{"--from=something"} );
@@ -294,7 +297,7 @@ class LoadCommandTest
                             "%n" +
                             "options:%n" +
                             "  --from=<archive-path>   Path to archive created with the dump command.%n" +
-                            "  --database=<name>       Name of database. [default:" + DatabaseManager.DEFAULT_DATABASE_NAME + "]%n" +
+                            "  --database=<name>       Name of database. [default:" + GraphDatabaseSettings.DEFAULT_DATABASE_NAME + "]%n" +
                             "  --force=<true|false>    If an existing database should be replaced.%n" +
                             "                          [default:false]%n" ),
                     baos.toString() );

@@ -35,30 +35,29 @@ import org.neo4j.kernel.api.index.IndexPopulator;
 import org.neo4j.kernel.api.index.IndexProvider;
 import org.neo4j.kernel.api.index.IndexUpdater;
 import org.neo4j.kernel.api.index.NodePropertyAccessor;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.kernel.impl.index.schema.config.SpaceFillingCurveSettings;
-import org.neo4j.storageengine.api.schema.IndexReader;
 import org.neo4j.storageengine.api.schema.IndexSample;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
 import org.neo4j.values.storable.CoordinateReferenceSystem;
 import org.neo4j.values.storable.PointValue;
 import org.neo4j.values.storable.Value;
 
+import static org.neo4j.index.internal.gbptree.GBPTree.NO_HEADER_WRITER;
 import static org.neo4j.kernel.impl.index.schema.fusion.FusionIndexBase.forAll;
 import static org.neo4j.kernel.impl.index.schema.fusion.FusionIndexSampler.combineSamples;
 
-class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.PartPopulator> implements IndexPopulator
+class SpatialIndexPopulator extends SpatialIndexCache<WorkSyncedNativeIndexPopulator<SpatialIndexKey,NativeIndexValue>> implements IndexPopulator
 {
-    SpatialIndexPopulator( StoreIndexDescriptor descriptor, IndexSamplingConfig samplingConfig, SpatialIndexFiles spatialIndexFiles, PageCache pageCache,
-                           FileSystemAbstraction fs, IndexProvider.Monitor monitor, SpaceFillingCurveConfiguration configuration )
+    SpatialIndexPopulator( StoreIndexDescriptor descriptor, SpatialIndexFiles spatialIndexFiles, PageCache pageCache,
+            FileSystemAbstraction fs, IndexProvider.Monitor monitor, SpaceFillingCurveConfiguration configuration )
     {
-        super( new PartFactory( pageCache, fs, spatialIndexFiles, descriptor, monitor, samplingConfig, configuration ) );
+        super( new PartFactory( pageCache, fs, spatialIndexFiles, descriptor, monitor, configuration ) );
     }
 
     @Override
     public synchronized void create()
     {
-        forAll( NativeIndexPopulator::clear, this );
+        forAll( p -> p.getActual().clear(), this );
 
         // We must make sure to have at least one subindex:
         // to be able to persist failure and to have the right state in the beginning
@@ -71,7 +70,7 @@ class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.Part
     @Override
     public synchronized void drop()
     {
-        forAll( NativeIndexPopulator::drop, this );
+        forAll( IndexPopulator::drop, this );
     }
 
     @Override
@@ -86,15 +85,18 @@ class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.Part
         }
         for ( Map.Entry<CoordinateReferenceSystem,List<IndexEntryUpdate<?>>> entry : batchMap.entrySet() )
         {
-            PartPopulator partPopulator = select( entry.getKey() );
+            IndexPopulator partPopulator = select( entry.getKey() );
             partPopulator.add( entry.getValue() );
         }
     }
 
     @Override
-    public void verifyDeferredConstraints( NodePropertyAccessor nodePropertyAccessor )
+    public void verifyDeferredConstraints( NodePropertyAccessor nodePropertyAccessor ) throws IndexEntryConflictException
     {
-        // No-op, uniqueness is checked for each update in add(IndexEntryUpdate)
+        for ( IndexPopulator part : this )
+        {
+            part.verifyDeferredConstraints( nodePropertyAccessor );
+        }
     }
 
     @Override
@@ -107,7 +109,7 @@ class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.Part
     public synchronized void close( boolean populationCompletedSuccessfully )
     {
         closeInstantiateCloseLock();
-        for ( NativeIndexPopulator part : this )
+        for ( IndexPopulator part : this )
         {
             part.close( populationCompletedSuccessfully );
         }
@@ -116,7 +118,7 @@ class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.Part
     @Override
     public synchronized void markAsFailed( String failure )
     {
-        for ( NativeIndexPopulator part : this )
+        for ( IndexPopulator part : this )
         {
             part.markAsFailed( failure );
         }
@@ -134,7 +136,7 @@ class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.Part
     public IndexSample sampleResult()
     {
         List<IndexSample> samples = new ArrayList<>();
-        for ( PartPopulator partPopulator : this )
+        for ( IndexPopulator partPopulator : this )
         {
             samples.add( partPopulator.sampleResult() );
         }
@@ -147,17 +149,39 @@ class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.Part
         private final SpaceFillingCurveSettings settings;
 
         PartPopulator( PageCache pageCache, FileSystemAbstraction fs, SpatialIndexFiles.SpatialFileLayout fileLayout, IndexProvider.Monitor monitor,
-                       StoreIndexDescriptor descriptor, IndexSamplingConfig samplingConfig, SpaceFillingCurveConfiguration configuration )
+                StoreIndexDescriptor descriptor, SpaceFillingCurveConfiguration configuration )
         {
-            super( pageCache, fs, fileLayout.getIndexFile(), fileLayout.layout, monitor, descriptor, samplingConfig );
+            super( pageCache, fs, fileLayout.getIndexFile(), fileLayout.layout, monitor, descriptor, NO_HEADER_WRITER );
             this.configuration = configuration;
             this.settings = fileLayout.settings;
         }
 
         @Override
-        IndexReader newReader()
+        public void verifyDeferredConstraints( NodePropertyAccessor nodePropertyAccessor ) throws IndexEntryConflictException
         {
-            return new SpatialIndexPartReader<>( tree, layout, samplingConfig, descriptor, configuration );
+            SpatialVerifyDeferredConstraint.verify( nodePropertyAccessor, layout, tree, descriptor );
+            super.verifyDeferredConstraints( nodePropertyAccessor );
+        }
+
+        @Override
+        boolean canCheckConflictsWithoutStoreAccess()
+        {
+            return false;
+        }
+
+        @Override
+        ConflictDetectingValueMerger<SpatialIndexKey,NativeIndexValue> getMainConflictDetector()
+        {
+            // Because of lossy point representation in index we need to always compare on node id,
+            // even for unique indexes. If we don't we risk throwing constraint violation exception
+            // for points that are in fact unique.
+            return new ConflictDetectingValueMerger<>( true );
+        }
+
+        @Override
+        NativeIndexReader<SpatialIndexKey, NativeIndexValue> newReader()
+        {
+            return new SpatialIndexPartReader<>( tree, layout, descriptor, configuration );
         }
 
         @Override
@@ -173,39 +197,37 @@ class SpatialIndexPopulator extends SpatialIndexCache<SpatialIndexPopulator.Part
         }
     }
 
-    static class PartFactory implements Factory<PartPopulator>
+    static class PartFactory implements Factory<WorkSyncedNativeIndexPopulator<SpatialIndexKey,NativeIndexValue>>
     {
         private final PageCache pageCache;
         private final FileSystemAbstraction fs;
         private final SpatialIndexFiles spatialIndexFiles;
         private final StoreIndexDescriptor descriptor;
         private final IndexProvider.Monitor monitor;
-        private final IndexSamplingConfig samplingConfig;
         private final SpaceFillingCurveConfiguration configuration;
 
         PartFactory( PageCache pageCache, FileSystemAbstraction fs, SpatialIndexFiles spatialIndexFiles, StoreIndexDescriptor descriptor,
-                IndexProvider.Monitor monitor, IndexSamplingConfig samplingConfig, SpaceFillingCurveConfiguration configuration )
+                IndexProvider.Monitor monitor, SpaceFillingCurveConfiguration configuration )
         {
             this.pageCache = pageCache;
             this.fs = fs;
             this.spatialIndexFiles = spatialIndexFiles;
             this.descriptor = descriptor;
             this.monitor = monitor;
-            this.samplingConfig = samplingConfig;
             this.configuration = configuration;
         }
 
         @Override
-        public PartPopulator newSpatial( CoordinateReferenceSystem crs )
+        public WorkSyncedNativeIndexPopulator<SpatialIndexKey,NativeIndexValue> newSpatial( CoordinateReferenceSystem crs )
         {
             return create( spatialIndexFiles.forCrs( crs ).getLayoutForNewIndex() );
         }
 
-        private PartPopulator create( SpatialIndexFiles.SpatialFileLayout fileLayout )
+        private WorkSyncedNativeIndexPopulator<SpatialIndexKey,NativeIndexValue> create( SpatialIndexFiles.SpatialFileLayout fileLayout )
         {
-            PartPopulator populator = new PartPopulator( pageCache, fs, fileLayout, monitor, descriptor, samplingConfig, configuration );
+            PartPopulator populator = new PartPopulator( pageCache, fs, fileLayout, monitor, descriptor, configuration );
             populator.create();
-            return populator;
+            return new WorkSyncedNativeIndexPopulator<>( populator );
         }
     }
 }

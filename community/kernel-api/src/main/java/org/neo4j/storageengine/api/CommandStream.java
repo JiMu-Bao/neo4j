@@ -27,7 +27,7 @@ import org.neo4j.helpers.collection.Visitor;
  * A stream of commands from one or more transactions, that can be serialized to a transaction log or applied to a
  * store.
  */
-public interface CommandStream
+public interface CommandStream extends Iterable<StorageCommand>
 {
     /**
      * Accepts a visitor into the commands making up this transaction.

@@ -20,16 +20,17 @@
 package org.neo4j.storageengine.api.txstate;
 
 import org.eclipse.collections.api.set.primitive.MutableLongSet;
+import org.eclipse.collections.impl.UnmodifiableMap;
 
-import org.neo4j.internal.kernel.api.IndexQuery;
+import java.util.NavigableMap;
+import javax.annotation.Nullable;
+
 import org.neo4j.internal.kernel.api.exceptions.schema.ConstraintValidationException;
 import org.neo4j.internal.kernel.api.exceptions.schema.CreateConstraintFailureException;
 import org.neo4j.internal.kernel.api.schema.SchemaDescriptor;
 import org.neo4j.internal.kernel.api.schema.constraints.ConstraintDescriptor;
 import org.neo4j.storageengine.api.RelationshipVisitor;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
-import org.neo4j.values.storable.Value;
-import org.neo4j.values.storable.ValueGroup;
 import org.neo4j.values.storable.ValueTuple;
 
 /**
@@ -89,35 +90,44 @@ public interface ReadableTransactionState
 
     // SCHEMA RELATED
 
-    ReadableDiffSets<IndexDescriptor> indexDiffSetsByLabel( int labelId );
+    DiffSets<IndexDescriptor> indexDiffSetsByLabel( int labelId );
 
-    ReadableDiffSets<IndexDescriptor> indexDiffSetsBySchema( SchemaDescriptor schema );
+    DiffSets<IndexDescriptor> indexDiffSetsBySchema( SchemaDescriptor schema );
 
-    ReadableDiffSets<IndexDescriptor> indexChanges();
+    DiffSets<IndexDescriptor> indexChanges();
 
     Iterable<IndexDescriptor> constraintIndexesCreatedInTx();
 
-    ReadableDiffSets<ConstraintDescriptor> constraintsChanges();
+    DiffSets<ConstraintDescriptor> constraintsChanges();
 
-    ReadableDiffSets<ConstraintDescriptor> constraintsChangesForLabel( int labelId );
+    DiffSets<ConstraintDescriptor> constraintsChangesForLabel( int labelId );
 
-    ReadableDiffSets<ConstraintDescriptor> constraintsChangesForSchema( SchemaDescriptor descriptor );
+    DiffSets<ConstraintDescriptor> constraintsChangesForSchema( SchemaDescriptor descriptor );
 
-    ReadableDiffSets<ConstraintDescriptor> constraintsChangesForRelationshipType( int relTypeId );
+    DiffSets<ConstraintDescriptor> constraintsChangesForRelationshipType( int relTypeId );
 
     Long indexCreatedForConstraint( ConstraintDescriptor constraint );
 
-    LongDiffSets indexUpdatesForScan( IndexDescriptor index );
+    // INDEX UPDATES
 
-    LongDiffSets indexUpdatesForSuffixOrContains( IndexDescriptor index, IndexQuery query );
+    /**
+     * A readonly view of all index updates for the provided schema. Returns {@code null}, if the index
+     * updates for this schema have not been initialized.
+     */
+    @Nullable
+    UnmodifiableMap<ValueTuple, ? extends LongDiffSets> getIndexUpdates( SchemaDescriptor schema );
 
-    LongDiffSets indexUpdatesForSeek( IndexDescriptor index, ValueTuple values );
+    /**
+     * A readonly view of all index updates for the provided schema, in sorted order. The returned
+     * Map is unmodifiable. Returns {@code null}, if the index updates for this schema have not been initialized.
+     *
+     * Ensure sorted index updates for a given index. This is needed for range query support and
+     * ay involve converting the existing hash map first.
+     */
+    @Nullable
+    NavigableMap<ValueTuple, ? extends LongDiffSets> getSortedIndexUpdates( SchemaDescriptor descriptor );
 
-    LongDiffSets indexUpdatesForRangeSeek( IndexDescriptor index, ValueGroup valueGroup,
-                                                            Value lower, boolean includeLower,
-                                                            Value upper, boolean includeUpper );
-
-    LongDiffSets indexUpdatesForRangeSeekByPrefix( IndexDescriptor index, String prefix );
+    // OTHER
 
     NodeState getNodeState( long id );
 

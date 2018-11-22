@@ -22,7 +22,7 @@ package org.neo4j.storageengine.api;
 /**
  * Cursor over relationships.
  */
-public interface StorageRelationshipScanCursor extends StorageRelationshipCursor
+public interface StorageRelationshipScanCursor extends StorageRelationshipCursor, StorageEntityScanCursor
 {
     /**
      * Initializes this cursor so that it will scan over existing relationships. Each call to {@link #next()} will
@@ -31,10 +31,4 @@ public interface StorageRelationshipScanCursor extends StorageRelationshipCursor
      * @param type relationship type to scan over, or -1 for all relationships regardless of type.
      */
     void scan( int type );
-
-    /**
-     * Initializes this cursor so that the next call to {@link #next()} will place this cursor at that relationship.
-     * @param reference relationship to place this cursor at the next call to {@link #next()}.
-     */
-    void single( long reference );
 }

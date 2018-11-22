@@ -80,7 +80,7 @@ import org.neo4j.storageengine.api.schema.LabelScanReader;
 import org.neo4j.storageengine.api.schema.PopulationProgress;
 import org.neo4j.storageengine.api.schema.SchemaRule;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
-import org.neo4j.storageengine.api.txstate.ReadableDiffSets;
+import org.neo4j.storageengine.api.txstate.DiffSets;
 import org.neo4j.values.AnyValue;
 import org.neo4j.values.ValueMapper;
 import org.neo4j.values.storable.Value;
@@ -143,6 +143,13 @@ public class AllStoreHolder extends Read
     {
         ktx.assertOpen();
         return hasTxStateWithChanges() && txState().relationshipIsDeletedInThisTx( relationship );
+    }
+
+    @Override
+    public Value nodePropertyChangeInTransactionOrNull( long node, int propertyKeyId )
+    {
+        ktx.assertOpen();
+        return hasTxStateWithChanges() ? txState().getNodeState( node ).propertyValue( propertyKeyId ) : null;
     }
 
     @Override
@@ -324,7 +331,7 @@ public class AllStoreHolder extends Read
         CapableIndexDescriptor indexDescriptor = storageReader.indexGetForSchema( descriptor );
         if ( ktx.hasTxStateWithChanges() )
         {
-            ReadableDiffSets<IndexDescriptor> diffSets = ktx.txState().indexDiffSetsByLabel( label );
+            DiffSets<IndexDescriptor> diffSets = ktx.txState().indexDiffSetsByLabel( label );
             if ( indexDescriptor != null )
             {
                 if ( diffSets.isRemoved( indexDescriptor ) )
@@ -362,7 +369,7 @@ public class AllStoreHolder extends Read
         CapableIndexDescriptor indexDescriptor = storageReader.indexGetForSchema( schema );
         if ( ktx.hasTxStateWithChanges() )
         {
-            ReadableDiffSets<IndexDescriptor> diffSets = ktx.txState().indexDiffSetsBySchema( schema );
+            DiffSets<IndexDescriptor> diffSets = ktx.txState().indexDiffSetsBySchema( schema );
             if ( indexDescriptor != null )
             {
                 if ( diffSets.isRemoved( indexDescriptor ) )
@@ -556,12 +563,12 @@ public class AllStoreHolder extends Read
     }
 
     @Override
-    public long nodesCountIndexed( IndexReference index, long nodeId, Value value ) throws KernelException
+    public long nodesCountIndexed( IndexReference index, long nodeId, int propertyKeyId, Value value ) throws KernelException
     {
         ktx.assertOpen();
         assertValidIndex( index );
         IndexReader reader = storageReader.getIndexReader( (IndexDescriptor) index );
-        return reader.countIndexedNodes( nodeId, value );
+        return reader.countIndexedNodes( nodeId, new int[] {propertyKeyId}, value );
     }
 
     @Override
@@ -617,7 +624,7 @@ public class AllStoreHolder extends Read
         if ( ktx.hasTxStateWithChanges() )
         {
             if ( checkIndexState( descriptor,
-                    ktx.txState().indexDiffSetsByLabel( descriptor.schema().keyId() ) ) )
+                    ktx.txState().indexDiffSetsBySchema( descriptor.schema() ) ) )
             {
                 return InternalIndexState.POPULATING;
             }
@@ -644,7 +651,7 @@ public class AllStoreHolder extends Read
         return singleOrNull( indexes );
     }
 
-    private boolean checkIndexState( IndexDescriptor index, ReadableDiffSets<IndexDescriptor> diffSet )
+    private boolean checkIndexState( IndexDescriptor index, DiffSets<IndexDescriptor> diffSet )
             throws IndexNotFoundKernelException
     {
         if ( diffSet.isAdded( index ) )
@@ -681,7 +688,7 @@ public class AllStoreHolder extends Read
         boolean inStore = storageReader.constraintExists( descriptor );
         if ( ktx.hasTxStateWithChanges() )
         {
-            ReadableDiffSets<ConstraintDescriptor> diffSet =
+            DiffSets<ConstraintDescriptor> diffSet =
                     ktx.txState().constraintsChangesForSchema( descriptor.schema() );
             return diffSet.isAdded( descriptor ) || (inStore && !diffSet.isRemoved( descriptor ));
         }
@@ -1000,12 +1007,6 @@ public class AllStoreHolder extends Read
     public <K, V> V schemaStateGetOrCreate( K key, Function<K,V> creator )
     {
         return schemaState.getOrCreate( key, creator );
-    }
-
-    @Override
-    public <K, V> V schemaStateGet( K key )
-    {
-        return schemaState.get( key );
     }
 
     @Override

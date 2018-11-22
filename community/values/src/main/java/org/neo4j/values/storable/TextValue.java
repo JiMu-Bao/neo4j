@@ -30,7 +30,7 @@ import static org.neo4j.values.virtual.VirtualValues.fromArray;
 
 public abstract class TextValue extends ScalarValue
 {
-    protected static final ListValue EMPTY_SPLIT = fromArray( stringArray( "", "" ) );
+    static final ListValue EMPTY_SPLIT = fromArray( stringArray( "", "" ) );
 
     TextValue()
     {
@@ -70,6 +70,12 @@ public abstract class TextValue extends ScalarValue
 
     public abstract TextValue plus( TextValue other );
 
+    public abstract boolean startsWith( TextValue other );
+
+    public abstract boolean endsWith( TextValue other );
+
+    public abstract boolean contains( TextValue other );
+
     public abstract int compareTo( TextValue other );
 
     @Override
@@ -96,6 +102,7 @@ public abstract class TextValue extends ScalarValue
         return false;
     }
 
+    @Override
     public ValueGroup valueGroup()
     {
         return ValueGroup.TEXT;

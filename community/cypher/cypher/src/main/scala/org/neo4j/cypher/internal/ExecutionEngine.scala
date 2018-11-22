@@ -26,7 +26,7 @@ import org.neo4j.cypher.internal.compatibility.CypherCacheMonitor
 import org.neo4j.cypher.internal.runtime.interpreted.LastCommittedTxIdProvider
 import org.neo4j.cypher.internal.tracing.CompilationTracer
 import org.neo4j.cypher.internal.tracing.CompilationTracer.QueryCompilationEvent
-import org.neo4j.cypher.{ParameterNotFoundException, exceptionHandler}
+import org.neo4j.cypher.{CypherExpressionEngineOption, ParameterNotFoundException, exceptionHandler}
 import org.neo4j.graphdb.Result
 import org.neo4j.helpers.collection.Pair
 import org.neo4j.internal.kernel.api.security.AccessMode
@@ -55,7 +55,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
 
   // HELPER OBJECTS
 
-  private val preParser = new PreParser(config.version, config.planner, config.runtime, config.queryCacheSize)
+  private val preParser = new PreParser(config.version, config.planner, config.runtime, config.expressionEngineOption, config.queryCacheSize)
   private val lastCommittedTxIdProvider = LastCommittedTxIdProvider(queryService)
   private def planReusabilitiy(executableQuery: ExecutableQuery,
                                transactionalContext: TransactionalContext): ReusabilityState =
@@ -65,7 +65,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
   private val log = logProvider.getLog( getClass )
   kernelMonitors.addMonitorListener( new StringCacheMonitor {
     override def cacheDiscard(ignored: Pair[String, ParameterTypeMap], query: String, secondsSinceReplan: Int) {
-      log.info(s"Discarded stale query from the query cache after ${secondsSinceReplan} seconds: $query")
+      log.info(s"Discarded stale query from the query cache after $secondsSinceReplan seconds: $query")
     }
   })
 
@@ -98,7 +98,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
       }
       val combinedParams = params.updatedWith(executableQuery.extractedParams)
       context.executingQuery().compilationCompleted(executableQuery.compilerInfo)
-      executableQuery.execute(context, preParsedQuery.executionMode, combinedParams)
+      executableQuery.execute(context, preParsedQuery, combinedParams)
 
     } catch {
       case t: Throwable =>
@@ -107,12 +107,33 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
     } finally queryTracer.close()
   }
 
-  def execute(query: String,
-              mapParams: MapValue,
-              context: TransactionalContext,
-              resultBuffer: ResultBuffer
-             ): QueryExecution = {
-    ???
+  /*
+   * Return the primary and secondary compile to be used
+   *
+   * The primary compiler is the main compiler and the secondary compiler is used for compiling expressions for hot queries.
+   */
+  private def compilers(preParsedQuery: PreParsedQuery,
+                        tracer: QueryCompilationEvent,
+                        transactionalContext: TransactionalContext,
+                        params: MapValue): (() => ExecutableQuery, (Int) => Option[ExecutableQuery]) = preParsedQuery.expressionEngine match {
+    //check if we need to jit compiling of queries
+    case CypherExpressionEngineOption.onlyWhenHot if config.recompilationLimit > 0 =>
+      val primary: () => ExecutableQuery = () => masterCompiler.compile(preParsedQuery,
+                                                 tracer, transactionalContext, params)
+      val secondary: (Int) => Option[ExecutableQuery] =
+        count => {
+          if (count > config.recompilationLimit) Some(masterCompiler.compile(preParsedQuery.copy(recompilationLimitReached = true),
+                                                                             tracer, transactionalContext, params))
+          else None
+        }
+
+      (primary, secondary)
+    //We have recompilationLimit == 0, go to compiled directly
+    case CypherExpressionEngineOption.onlyWhenHot =>
+      (() => masterCompiler.compile(preParsedQuery.copy(recompilationLimitReached = true),
+                                    tracer, transactionalContext, params), (_) => None)
+    //In the other cases we have no recompilation step
+    case _ =>  (() => masterCompiler.compile(preParsedQuery, tracer, transactionalContext, params), (_) => None)
   }
 
   private def getOrCompile(context: TransactionalContext,
@@ -131,9 +152,11 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
       while (n < ExecutionEngine.PLAN_BUILDING_TRIES) {
 
         val schemaToken = schemaHelper.readSchemaToken(tc)
+        val (primaryCompiler, secondaryCompiler) = compilers(preParsedQuery, tracer, tc, params)
         val cacheLookup = queryCache.computeIfAbsentOrStale(cacheKey,
                                                             tc,
-                                                            () => masterCompiler.compile(preParsedQuery, tracer, tc, params),
+                                                            primaryCompiler,
+                                                            secondaryCompiler,
                                                             preParsedQuery.rawStatement)
         cacheLookup match {
           case _: CacheHit[_] |
@@ -168,7 +191,7 @@ class ExecutionEngine(val queryService: GraphDatabaseQueryService,
   @throws(classOf[ParameterNotFoundException])
   private def checkParameters(queryParams: Seq[String], givenParams: MapValue, extractedParams: MapValue) {
     exceptionHandler.runSafely {
-      val missingKeys = queryParams.filter(key => !(givenParams.containsKey(key) || extractedParams.containsKey(key)))
+      val missingKeys = queryParams.filter(key => !(givenParams.containsKey(key) || extractedParams.containsKey(key))).distinct
       if (missingKeys.nonEmpty) {
         throw new ParameterNotFoundException("Expected parameter(s): " + missingKeys.mkString(", "))
       }

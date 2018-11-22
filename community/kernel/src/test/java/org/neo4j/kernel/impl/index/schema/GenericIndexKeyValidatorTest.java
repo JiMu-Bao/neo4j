@@ -23,16 +23,18 @@ import org.junit.Rule;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.HashMap;
 
 import org.neo4j.index.internal.gbptree.Layout;
+import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.impl.index.schema.config.ConfiguredSpaceFillingCurveSettingsCache;
+import org.neo4j.kernel.impl.index.schema.config.IndexSpecificSpaceFillingCurveSettingsCache;
 import org.neo4j.test.rule.RandomRule;
-import org.neo4j.values.SequenceValue;
+import org.neo4j.values.storable.CoordinateReferenceSystem;
 import org.neo4j.values.storable.Value;
-import org.neo4j.values.storable.Values;
 
 import static java.lang.String.format;
 import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.number.OrderingComparison.greaterThan;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.doThrow;
@@ -40,8 +42,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.neo4j.helpers.collection.Iterators.array;
+import static org.neo4j.io.pagecache.PageCache.PAGE_SIZE;
+import static org.neo4j.values.storable.CoordinateReferenceSystem.Cartesian;
+import static org.neo4j.values.storable.CoordinateReferenceSystem.Cartesian_3D;
+import static org.neo4j.values.storable.CoordinateReferenceSystem.WGS84;
 import static org.neo4j.values.storable.DateValue.epochDate;
 import static org.neo4j.values.storable.Values.intValue;
+import static org.neo4j.values.storable.Values.pointValue;
 import static org.neo4j.values.storable.Values.stringValue;
 
 public class GenericIndexKeyValidatorTest
@@ -53,9 +61,9 @@ public class GenericIndexKeyValidatorTest
     public void shouldNotBotherSerializingToRealBytesIfFarFromThreshold()
     {
         // given
-        Layout<CompositeGenericKey,NativeIndexValue> layout = mock( Layout.class );
+        Layout<GenericKey,NativeIndexValue> layout = mock( Layout.class );
         doThrow( RuntimeException.class ).when( layout ).newKey();
-        GenericIndexKeyValidator validator = new GenericIndexKeyValidator( 120, layout );
+        GenericIndexKeyValidator validator = new GenericIndexKeyValidator( 120, layout, mock( IndexSpecificSpaceFillingCurveSettingsCache.class ), PAGE_SIZE );
 
         // when
         validator.validate( new Value[]{intValue( 10 ), epochDate( 100 ), stringValue( "abc" )} );
@@ -67,9 +75,9 @@ public class GenericIndexKeyValidatorTest
     public void shouldInvolveSerializingToRealBytesIfMayCrossThreshold()
     {
         // given
-        Layout<CompositeGenericKey,NativeIndexValue> layout = mock( Layout.class );
-        when( layout.newKey() ).thenReturn( new CompositeGenericKey( 3 ) );
-        GenericIndexKeyValidator validator = new GenericIndexKeyValidator( 50, layout );
+        Layout<GenericKey,NativeIndexValue> layout = mock( Layout.class );
+        when( layout.newKey() ).thenReturn( new CompositeGenericKey( 3, spatialSettings() ) );
+        GenericIndexKeyValidator validator = new GenericIndexKeyValidator( 48, layout, mock( IndexSpecificSpaceFillingCurveSettingsCache.class ), PAGE_SIZE );
 
         // when
         try
@@ -91,9 +99,10 @@ public class GenericIndexKeyValidatorTest
         // given
         int slots = random.nextInt( 1, 6 );
         int maxLength = random.nextInt( 15, 30 ) * slots;
-        GenericLayout layout = new GenericLayout( slots );
-        GenericIndexKeyValidator validator = new GenericIndexKeyValidator( maxLength, layout );
-        CompositeGenericKey key = layout.newKey();
+        GenericLayout layout = new GenericLayout( slots, spatialSettings() );
+        GenericIndexKeyValidator validator = new GenericIndexKeyValidator( maxLength, layout, mock( IndexSpecificSpaceFillingCurveSettingsCache.class ),
+                PAGE_SIZE );
+        GenericKey key = layout.newKey();
 
         int countOk = 0;
         int countNotOk = 0;
@@ -123,13 +132,40 @@ public class GenericIndexKeyValidatorTest
                         Arrays.toString( tuple ), manualIsOk, isOk ) );
             }
         }
-
-        // then a little meta assertion, that the generated parameters in this test are good so that it test at least some on each side of the threshold
-        assertThat( countOk, greaterThan( 0 ) );
-        assertThat( countNotOk, greaterThan( 0 ) );
     }
 
-    private static int actualSize( Value[] tuple, CompositeGenericKey key )
+    @Test
+    public void shouldDetectCrsSettingsLimitExceeded()
+    {
+        // given
+        GenericLayout layout = new GenericLayout( 2, spatialSettings() );
+        IndexSpecificSpaceFillingCurveSettingsCache indexSettings =
+                new IndexSpecificSpaceFillingCurveSettingsCache( new ConfiguredSpaceFillingCurveSettingsCache( Config.defaults() ), new HashMap<>() );
+        GenericIndexKeyValidator validator = new GenericIndexKeyValidator( 200, layout, indexSettings, 300/*controlled page size*/ );
+        validator.validate( array( pointValue( WGS84, 1, 2 ), pointValue( Cartesian, 1, 2 ) ) );
+        // just checking so that the test assumption about max 2 settings is true
+        indexSettings.forCrs( WGS84, true );
+        indexSettings.forCrs( CoordinateReferenceSystem.Cartesian, true );
+
+        // when
+        try
+        {
+            validator.validate( array( pointValue( Cartesian_3D, 1, 2, 3 ) ) );
+        }
+        catch ( UnsupportedOperationException e )
+        {
+            // then
+            assertThat( e.getMessage(), containsString( "exceed number of crs settings" ) );
+        }
+    }
+
+    private IndexSpecificSpaceFillingCurveSettingsCache spatialSettings()
+    {
+        return new IndexSpecificSpaceFillingCurveSettingsCache(
+                new ConfiguredSpaceFillingCurveSettingsCache( Config.defaults() ), new HashMap<>() );
+    }
+
+    private static int actualSize( Value[] tuple, GenericKey key )
     {
         key.initialize( 0 );
         for ( int i = 0; i < tuple.length; i++ )
@@ -144,13 +180,7 @@ public class GenericIndexKeyValidatorTest
         Value[] tuple = new Value[slots];
         for ( int j = 0; j < slots; j++ )
         {
-            do
-            {
-                // TODO remember to remove this when generic layout gets support for spatial values
-                tuple[j] = random.nextValue();
-            }
-            while ( Values.isGeometryValue( tuple[j] ) ||
-                    (tuple[j].isSequenceValue() && Values.isGeometryValue( (Value) ((SequenceValue) tuple[j]).value( 0 ) )) );
+            tuple[j] = random.nextValue();
         }
         return tuple;
     }

@@ -20,12 +20,10 @@
 package org.neo4j.kernel.impl.index.schema;
 
 import org.neo4j.index.internal.gbptree.GBPTree;
-import org.neo4j.index.internal.gbptree.Layout;
 import org.neo4j.internal.kernel.api.IndexOrder;
 import org.neo4j.internal.kernel.api.IndexQuery;
 import org.neo4j.internal.kernel.api.IndexQuery.ExactPredicate;
 import org.neo4j.internal.kernel.api.IndexQuery.RangePredicate;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.storageengine.api.schema.IndexDescriptor;
 import org.neo4j.values.storable.Value;
 import org.neo4j.values.storable.ValueGroup;
@@ -35,10 +33,9 @@ import static org.neo4j.internal.kernel.api.IndexQuery.StringPrefixPredicate;
 
 class StringIndexReader extends NativeIndexReader<StringIndexKey,NativeIndexValue>
 {
-    StringIndexReader( GBPTree<StringIndexKey,NativeIndexValue> tree, Layout<StringIndexKey,NativeIndexValue> layout,
-            IndexSamplingConfig samplingConfig, IndexDescriptor descriptor )
+    StringIndexReader( GBPTree<StringIndexKey,NativeIndexValue> tree, IndexLayout<StringIndexKey,NativeIndexValue> layout, IndexDescriptor descriptor )
     {
-        super( tree, layout, samplingConfig, descriptor );
+        super( tree, layout, descriptor );
     }
 
     @Override

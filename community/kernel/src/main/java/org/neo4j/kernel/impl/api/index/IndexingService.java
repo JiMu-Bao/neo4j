@@ -19,6 +19,7 @@
  */
 package org.neo4j.kernel.impl.api.index;
 
+import org.apache.commons.lang3.mutable.MutableBoolean;
 import org.eclipse.collections.api.LongIterable;
 import org.eclipse.collections.api.block.procedure.primitive.LongObjectProcedure;
 import org.eclipse.collections.api.map.primitive.MutableLongObjectMap;
@@ -31,17 +32,21 @@ import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
+import java.util.StringJoiner;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.neo4j.function.ThrowingConsumer;
 import org.neo4j.graphdb.ResourceIterator;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.internal.kernel.api.InternalIndexState;
 import org.neo4j.internal.kernel.api.TokenNameLookup;
@@ -104,10 +109,11 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
     private final IndexProviderMap providerMap;
     private final IndexMapReference indexMapRef;
     private final Iterable<StoreIndexDescriptor> indexDescriptors;
-    private final Log log;
+    private final Log internalLog;
+    private final Log userLog;
     private final TokenNameLookup tokenNameLookup;
     private final MultiPopulatorFactory multiPopulatorFactory;
-    private final LogProvider logProvider;
+    private final LogProvider internalLogProvider;
     private final Monitor monitor;
     private final SchemaState schemaState;
     private final IndexPopulationJobController populationJobController;
@@ -176,7 +182,8 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
             JobScheduler scheduler,
             SchemaState schemaState,
             MultiPopulatorFactory multiPopulatorFactory,
-            LogProvider logProvider,
+            LogProvider internalLogProvider,
+            LogProvider userLogProvider,
             Monitor monitor )
     {
         this.indexProxyCreator = indexProxyCreator;
@@ -188,10 +195,11 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
         this.tokenNameLookup = tokenNameLookup;
         this.schemaState = schemaState;
         this.multiPopulatorFactory = multiPopulatorFactory;
-        this.logProvider = logProvider;
+        this.internalLogProvider = internalLogProvider;
         this.monitor = monitor;
         this.populationJobController = new IndexPopulationJobController( scheduler );
-        this.log = logProvider.getLog( getClass() );
+        this.internalLog = internalLogProvider.getLog( getClass() );
+        this.userLog = userLogProvider.getLog( getClass() );
     }
 
     /**
@@ -213,9 +221,9 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
                 IndexProvider provider = providerMap.lookup( providerDescriptor );
                 InternalIndexState initialState = provider.getInitialState( indexDescriptor );
                 indexStates.computeIfAbsent( initialState, internalIndexState -> new ArrayList<>() )
-                .add( new IndexLogRecord( indexDescriptor ) );
+                        .add( new IndexLogRecord( indexDescriptor ) );
 
-                log.debug( indexStateInfo( "init", initialState, indexDescriptor ) );
+                internalLog.debug( indexStateInfo( "init", initialState, indexDescriptor ) );
                 switch ( initialState )
                 {
                 case ONLINE:
@@ -270,15 +278,20 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
         indexMapRef.modify( indexMap ->
         {
             Map<InternalIndexState, List<IndexLogRecord>> indexStates = new EnumMap<>( InternalIndexState.class );
+            Map<IndexProviderDescriptor,List<IndexLogRecord>> indexProviders = new HashMap<>();
 
             // Find all indexes that are not already online, do not require rebuilding, and create them
             indexMap.forEachIndexProxy( ( indexId, proxy ) ->
             {
                 InternalIndexState state = proxy.getState();
                 StoreIndexDescriptor descriptor = proxy.getDescriptor();
+                IndexProviderDescriptor providerDescriptor = descriptor.providerDescriptor();
+                IndexLogRecord indexLogRecord = new IndexLogRecord( descriptor );
                 indexStates.computeIfAbsent( state, internalIndexState -> new ArrayList<>() )
-                .add( new IndexLogRecord( descriptor ) );
-                log.debug( indexStateInfo( "start", state, descriptor ) );
+                        .add( indexLogRecord );
+                indexProviders.computeIfAbsent( providerDescriptor, indexProviderDescriptor -> new ArrayList<>() )
+                        .add( indexLogRecord );
+                internalLog.debug( indexStateInfo( "start", state, descriptor ) );
                 switch ( state )
                 {
                 case ONLINE:
@@ -296,6 +309,7 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
                 }
             } );
             logIndexStateSummary( "start", indexStates );
+            logIndexProviderSummary( indexProviders );
 
             // Drop placeholder proxies for indexes that need to be rebuilt
             dropRecoveringIndexes( indexMap, rebuildingDescriptors.keySet() );
@@ -340,7 +354,7 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
 
     private void populateIndexesOfAllTypes( MutableLongObjectMap<StoreIndexDescriptor> rebuildingDescriptors, IndexMap indexMap )
     {
-        Map<EntityType,MutableLongObjectMap<StoreIndexDescriptor>> rebuildingDescriptorsByType = new HashMap<>();
+        Map<EntityType,MutableLongObjectMap<StoreIndexDescriptor>> rebuildingDescriptorsByType = new EnumMap<>( EntityType.class );
         for ( StoreIndexDescriptor descriptor : rebuildingDescriptors )
         {
             rebuildingDescriptorsByType.computeIfAbsent( descriptor.schema().entityType(), type -> new LongObjectHashMap<>() )
@@ -468,13 +482,9 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
     }
 
     @Override
-    public IndexProviderDescriptor indexProviderForNameOrDefault( Optional<String> providerName )
+    public IndexProviderDescriptor indexProviderByName( String providerName )
     {
-        if ( providerName.isPresent() )
-        {
-            return providerMap.lookup( providerName.get() ).getProviderDescriptor();
-        }
-        return providerMap.getDefaultProvider().getProviderDescriptor();
+        return providerMap.lookup( providerName ).getProviderDescriptor();
     }
 
     /**
@@ -599,7 +609,7 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
 
     public void triggerIndexSampling( IndexSamplingMode mode )
     {
-        log.info( "Manual trigger for sampling all indexes [" + mode + "]" );
+        internalLog.info( "Manual trigger for sampling all indexes [" + mode + "]" );
         samplingController.sampleIndexes( mode );
     }
 
@@ -607,7 +617,7 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
             throws IndexNotFoundKernelException
     {
         String description = descriptor.userDescription( tokenNameLookup );
-        log.info( "Manual trigger for sampling index " + description + " [" + mode + "]" );
+        internalLog.info( "Manual trigger for sampling index " + description + " [" + mode + "]" );
         samplingController.sampleIndex( indexMapRef.getIndexId( descriptor ), mode );
     }
 
@@ -631,7 +641,7 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
                 IndexProxy index = getIndexProxy( indexId );
                 index.awaitStoreScanCompleted();
                 index.activate();
-                log.info( "Constraint %s is %s.", index.getDescriptor(), ONLINE.name() );
+                internalLog.info( "Constraint %s is %s.", index.getDescriptor(), ONLINE.name() );
             }
         }
         catch ( InterruptedException e )
@@ -704,7 +714,7 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
                 }
                 catch ( Exception e )
                 {
-                    log.error( "Unable to close index", e );
+                    internalLog.error( "Unable to close index", e );
                 }
             }
             // Effectively clearing it
@@ -735,7 +745,7 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
 
     private IndexPopulationJob newIndexPopulationJob( EntityType type, boolean verifyBeforeFlipping )
     {
-        MultipleIndexPopulator multiPopulator = multiPopulatorFactory.create( storeView, logProvider, type, schemaState );
+        MultipleIndexPopulator multiPopulator = multiPopulatorFactory.create( storeView, internalLogProvider, type, schemaState );
         return new IndexPopulationJob( multiPopulator, monitor, verifyBeforeFlipping );
     }
 
@@ -773,10 +783,34 @@ public class IndexingService extends LifecycleAdapter implements IndexingUpdateS
             List<IndexLogRecord> logRecords = indexStateEntry.getValue();
             for ( IndexLogRecord logRecord : logRecords )
             {
-                log.info( indexStateInfo( method, state, logRecord.getDescriptor() ) );
+                internalLog.info( indexStateInfo( method, state, logRecord.getDescriptor() ) );
             }
         }
-        log.info( format( "IndexingService.%s: indexes not specifically mentioned above are %s", method, mostPopularState ) );
+        internalLog.info( format( "IndexingService.%s: indexes not specifically mentioned above are %s", method, mostPopularState ) );
+    }
+
+    private void logIndexProviderSummary( Map<IndexProviderDescriptor,List<IndexLogRecord>> indexProviders )
+    {
+        Set<String> deprecatedIndexProviders = Arrays.stream( GraphDatabaseSettings.SchemaIndex.values() )
+                .filter( GraphDatabaseSettings.SchemaIndex::deprecated )
+                .map( GraphDatabaseSettings.SchemaIndex::providerName )
+                .collect( Collectors.toSet() );
+        StringJoiner joiner = new StringJoiner( ", ", "Deprecated index providers in use: ",
+                ". Use procedure 'db.indexes()' to see what indexes use which index provider." );
+        MutableBoolean anyDeprecated = new MutableBoolean();
+        indexProviders.forEach( ( indexProviderDescriptor, indexLogRecords ) ->
+        {
+            if ( deprecatedIndexProviders.contains( indexProviderDescriptor.name() ) )
+            {
+                anyDeprecated.setTrue();
+                int numberOfIndexes = indexLogRecords.size();
+                joiner.add( indexProviderDescriptor.name() + " (" + numberOfIndexes + (numberOfIndexes == 1 ? " index" : " indexes") + ")" );
+            }
+        } );
+        if ( anyDeprecated.getValue() )
+        {
+            userLog.info( joiner.toString() );
+        }
     }
 
     private final class IndexPopulationStarter implements Function<IndexMap,IndexMap>

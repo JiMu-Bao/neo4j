@@ -27,6 +27,7 @@ import org.junit.rules.RuleChain;
 import org.neo4j.consistency.RecordType;
 import org.neo4j.consistency.report.ConsistencySummaryStatistics;
 import org.neo4j.consistency.statistics.Statistics;
+import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.DependencyResolver;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Node;
@@ -149,7 +150,7 @@ public class DetectAllRelationshipInconsistenciesIT
     private StoreFactory newStoreFactory( PageCache pageCache )
     {
         FileSystemAbstraction fileSystem = fileSystemRule.get();
-        return new StoreFactory( directory.databaseDir(), getTuningConfiguration(),
+        return new StoreFactory( directory.databaseLayout(), getTuningConfiguration(),
                 new DefaultIdGeneratorFactory( fileSystem ), pageCache, fileSystem, NullLogProvider.getInstance(),
                 EmptyVersionContextSupplier.EMPTY );
     }
@@ -163,7 +164,7 @@ public class DetectAllRelationshipInconsistenciesIT
     private GraphDatabaseAPI getGraphDatabaseAPI()
     {
         TestGraphDatabaseFactory factory = new TestGraphDatabaseFactory();
-        GraphDatabaseService database = factory.newEmbeddedDatabaseBuilder( directory.absolutePath() )
+        GraphDatabaseService database = factory.newEmbeddedDatabaseBuilder( directory.databaseDir() )
                 .setConfig( GraphDatabaseSettings.record_format, getRecordFormatName() )
                 .setConfig( "dbms.backup.enabled", "false" )
                 .newGraphDatabase();

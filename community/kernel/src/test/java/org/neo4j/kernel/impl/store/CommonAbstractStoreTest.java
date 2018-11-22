@@ -34,6 +34,8 @@ import java.util.function.LongSupplier;
 
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.io.layout.DatabaseFile;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.PageCursor;
 import org.neo4j.io.pagecache.PagedFile;
@@ -51,7 +53,6 @@ import org.neo4j.kernel.impl.store.id.validation.IdCapacityExceededException;
 import org.neo4j.kernel.impl.store.id.validation.NegativeIdException;
 import org.neo4j.kernel.impl.store.id.validation.ReservedIdException;
 import org.neo4j.kernel.impl.store.record.AbstractBaseRecord;
-import org.neo4j.kernel.impl.storemigration.StoreFileType;
 import org.neo4j.logging.LogProvider;
 import org.neo4j.logging.NullLogProvider;
 import org.neo4j.test.rule.ConfigurablePageCacheRule;
@@ -87,6 +88,7 @@ public class CommonAbstractStoreTest
     private final PageCache pageCache = mock( PageCache.class );
     private final Config config = Config.defaults();
     private final File storeFile = new File( "store" );
+    private final File idStoreFile = new File( "isStore" );
     private final RecordFormat<TheRecord> recordFormat = mock( RecordFormat.class );
     private final IdType idType = IdType.RELATIONSHIP; // whatever
 
@@ -130,6 +132,7 @@ public class CommonAbstractStoreTest
     public void failStoreInitializationWhenHeaderRecordCantBeRead() throws IOException
     {
         File storeFile = dir.file( "a" );
+        File idFile = dir.file( "idFile" );
         PageCache pageCache = mock( PageCache.class );
         PagedFile pagedFile = mock( PagedFile.class );
         PageCursor pageCursor = mock( PageCursor.class );
@@ -143,10 +146,9 @@ public class CommonAbstractStoreTest
         expectedException.expect( StoreNotFoundException.class );
         expectedException.expectMessage( "Fail to read header record of store file: " + storeFile.getAbsolutePath() );
 
-        try ( DynamicArrayStore dynamicArrayStore = new DynamicArrayStore( storeFile, config, IdType.NODE_LABELS,
+        try ( DynamicArrayStore dynamicArrayStore = new DynamicArrayStore( storeFile, idFile, config, IdType.NODE_LABELS,
                 idGeneratorFactory, pageCache, NullLogProvider.getInstance(),
-                Settings.INTEGER.apply( GraphDatabaseSettings.label_block_size.getDefaultValue() ),
-                recordFormats ) )
+                Settings.INTEGER.apply( GraphDatabaseSettings.label_block_size.getDefaultValue() ), recordFormats ) )
         {
             dynamicArrayStore.initialise( false );
         }
@@ -210,29 +212,30 @@ public class CommonAbstractStoreTest
     public void shouldDeleteOnCloseIfOpenOptionsSaysSo()
     {
         // GIVEN
-        File file = dir.file( "store" ).getAbsoluteFile();
-        File idFile = new File( file.getParentFile(), StoreFileType.ID.augment( file.getName() ) );
+        DatabaseLayout databaseLayout = dir.databaseLayout();
+        File nodeStore = databaseLayout.nodeStore();
+        File idFile = databaseLayout.idFile( DatabaseFile.NODE_STORE ).orElseThrow( () -> new IllegalStateException( "Node store id file not found." ) );
         FileSystemAbstraction fs = fileSystemRule.get();
         PageCache pageCache = pageCacheRule.getPageCache( fs, Config.defaults() );
-        TheStore store = new TheStore( file, config, idType, new DefaultIdGeneratorFactory( fs ), pageCache,
+        TheStore store = new TheStore( nodeStore, databaseLayout.idNodeStore(), config, idType, new DefaultIdGeneratorFactory( fs ), pageCache,
                 NullLogProvider.getInstance(), recordFormat, DELETE_ON_CLOSE );
         store.initialise( true );
         store.makeStoreOk();
-        assertTrue( fs.fileExists( file ) );
+        assertTrue( fs.fileExists( nodeStore ) );
         assertTrue( fs.fileExists( idFile ) );
 
         // WHEN
         store.close();
 
         // THEN
-        assertFalse( fs.fileExists( file ) );
+        assertFalse( fs.fileExists( nodeStore ) );
         assertFalse( fs.fileExists( idFile ) );
     }
 
     private TheStore newStore()
     {
         LogProvider log = NullLogProvider.getInstance();
-        TheStore store = new TheStore( storeFile, config, idType, idGeneratorFactory, pageCache, log, recordFormat );
+        TheStore store = new TheStore( storeFile, idStoreFile, config, idType, idGeneratorFactory, pageCache, log, recordFormat );
         store.initialise( false );
         return store;
     }
@@ -244,11 +247,11 @@ public class CommonAbstractStoreTest
 
     private static class TheStore extends CommonAbstractStore<TheRecord,NoStoreHeader>
     {
-        TheStore( File fileName, Config configuration, IdType idType, IdGeneratorFactory idGeneratorFactory,
+        TheStore( File file, File idFile, Config configuration, IdType idType, IdGeneratorFactory idGeneratorFactory,
                 PageCache pageCache, LogProvider logProvider, RecordFormat<TheRecord> recordFormat,
                 OpenOption... openOptions )
         {
-            super( fileName, configuration, idType, idGeneratorFactory, pageCache, logProvider, "TheType",
+            super( file, idFile, configuration, idType, idGeneratorFactory, pageCache, logProvider, "TheType",
                     recordFormat, NoStoreHeaderFormat.NO_STORE_HEADER_FORMAT, "v1", openOptions );
         }
 

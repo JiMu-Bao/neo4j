@@ -41,26 +41,27 @@ import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.config.Setting;
+import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.kernel.api.impl.index.storage.FailureStorage;
 import org.neo4j.kernel.api.index.IndexDirectoryStructure;
 import org.neo4j.kernel.impl.store.StoreType;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.values.storable.RandomValues;
-import org.neo4j.values.storable.Value;
 
 import static org.hamcrest.Matchers.both;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 import static org.neo4j.commandline.dbms.MemoryRecommendationsCommand.bytesToString;
 import static org.neo4j.commandline.dbms.MemoryRecommendationsCommand.recommendHeapMemory;
 import static org.neo4j.commandline.dbms.MemoryRecommendationsCommand.recommendOsMemory;
 import static org.neo4j.commandline.dbms.MemoryRecommendationsCommand.recommendPageCacheMemory;
+import static org.neo4j.commandline.dbms.MemoryRecommendationsCommand.recommendTxStateMemory;
 import static org.neo4j.configuration.ExternalSettings.initialHeapSize;
 import static org.neo4j.configuration.ExternalSettings.maxHeapSize;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.SchemaIndex;
@@ -111,15 +112,27 @@ public class MemoryRecommendationsCommandTest
     @Test
     public void mustRecommendPageCacheMemory()
     {
-        assertThat( recommendPageCacheMemory( mebiBytes( 100 ) ), between( mebiBytes( 95 ), mebiBytes( 105 ) ) );
-        assertThat( recommendPageCacheMemory( gibiBytes( 1 ) ), between( mebiBytes( 95 ), mebiBytes( 105 ) ) );
-        assertThat( recommendPageCacheMemory( gibiBytes( 3 ) ), between( mebiBytes( 470 ), mebiBytes( 530 ) ) );
-        assertThat( recommendPageCacheMemory( gibiBytes( 6 ) ), between( mebiBytes( 980 ), mebiBytes( 1048 ) ) );
-        assertThat( recommendPageCacheMemory( gibiBytes( 192 ) ), between( gibiBytes( 140 ), gibiBytes( 150 ) ) );
-        assertThat( recommendPageCacheMemory( gibiBytes( 1920 ) ), between( gibiBytes( 1850 ), gibiBytes( 1900 ) ) );
+        assertEquals( mebiBytes( 100 ), recommendPageCacheMemory( mebiBytes( 100 ) ) );
+        assertEquals( mebiBytes( 100 ), recommendPageCacheMemory( gibiBytes( 1 ) ) );
+        assertThat( recommendPageCacheMemory( gibiBytes( 3 ) ), between( mebiBytes( 100 ), mebiBytes( 256 ) ) );
+        assertThat( recommendPageCacheMemory( gibiBytes( 6 ) ), between( mebiBytes( 100 ), mebiBytes( 256 ) ) );
+        assertThat( recommendPageCacheMemory( gibiBytes( 192 ) ), between( gibiBytes( 75 ), gibiBytes( 202 ) ) );
+        assertThat( recommendPageCacheMemory( gibiBytes( 1920 ) ), between( gibiBytes( 978 ), gibiBytes( 1900 ) ) );
 
         // Also never recommend more than 16 TiB of page cache memory, regardless of how much is available.
-        assertThat( recommendPageCacheMemory( exbiBytes( 1 ) ), lessThan( tebiBytes( 17 ) ) );
+        assertThat( recommendPageCacheMemory( exbiBytes( 1 ) ), lessThanOrEqualTo( tebiBytes( 16 ) ) );
+    }
+
+    @Test
+    public void recommendTxStatMemory()
+    {
+        assertEquals( mebiBytes( 128 ), recommendTxStateMemory( mebiBytes( 100 ) ) );
+        assertEquals( mebiBytes( 128 ), recommendTxStateMemory( mebiBytes( 512 ) ) );
+        assertEquals( mebiBytes( 192 ), recommendTxStateMemory( mebiBytes( 768 ) ) );
+        assertEquals( mebiBytes( 256 ), recommendTxStateMemory( gibiBytes( 1 ) ) );
+        assertEquals( gibiBytes( 4 ), recommendTxStateMemory( gibiBytes( 16 ) ) );
+        assertEquals( gibiBytes( 8 ), recommendTxStateMemory( gibiBytes( 32 ) ) );
+        assertEquals( gibiBytes( 8 ), recommendTxStateMemory( gibiBytes( 128 ) ) );
     }
 
     @Test
@@ -177,7 +190,7 @@ public class MemoryRecommendationsCommandTest
         String databaseName = "mydb";
         store( stringMap( data_directory.name(), homeDir.toString() ), configFile.toFile() );
         File databaseDirectory = fromFile( configFile ).withHome( homeDir ).withSetting( active_database, databaseName ).build().get( database_path );
-        createDatabaseWithNativeIndexes( databaseDirectory.getParentFile(), databaseName );
+        createDatabaseWithNativeIndexes( databaseDirectory );
         OutsideWorld outsideWorld = new OutputCaptureOutsideWorld( output );
         MemoryRecommendationsCommand command = new MemoryRecommendationsCommand( homeDir, configDir, outsideWorld );
         String heap = bytesToString( recommendHeapMemory( gibiBytes( 8 ) ) );
@@ -193,7 +206,7 @@ public class MemoryRecommendationsCommandTest
         assertThat( stringMap.get( maxHeapSize.name() ), is( heap ) );
         assertThat( stringMap.get( pagecache_memory.name() ), is( pagecache ) );
 
-        long[] expectedSizes = calculatePageCacheFileSize( databaseDirectory );
+        long[] expectedSizes = calculatePageCacheFileSize( DatabaseLayout.of( databaseDirectory ) );
         long expectedPageCacheSize = expectedSizes[0];
         long expectedLuceneSize = expectedSizes[1];
         assertThat( memrecString, containsString( "Lucene indexes: " + bytesToString( expectedLuceneSize ) ) );
@@ -205,7 +218,7 @@ public class MemoryRecommendationsCommandTest
         return both( greaterThanOrEqualTo( lowerBound ) ).and( lessThanOrEqualTo( upperBound ) );
     }
 
-    private static long[] calculatePageCacheFileSize( File databaseDirectory ) throws IOException
+    private static long[] calculatePageCacheFileSize( DatabaseLayout databaseLayout ) throws IOException
     {
         MutableLong pageCacheTotal = new MutableLong();
         MutableLong luceneTotal = new MutableLong();
@@ -213,13 +226,12 @@ public class MemoryRecommendationsCommandTest
         {
             if ( storeType.isRecordStore() )
             {
-                File file = new File( databaseDirectory, storeType.getStoreFile().storeFileName() );
-                long length = file.length();
+                long length = databaseLayout.file( storeType.getDatabaseFile() ).mapToLong( File::length ).sum();
                 pageCacheTotal.add( length );
             }
         }
 
-        Files.walkFileTree( IndexDirectoryStructure.baseSchemaIndexFolder( databaseDirectory ).toPath(), new SimpleFileVisitor<Path>()
+        Files.walkFileTree( IndexDirectoryStructure.baseSchemaIndexFolder( databaseLayout.databaseDirectory() ).toPath(), new SimpleFileVisitor<Path>()
         {
             @Override
             public FileVisitResult visitFile( Path path, BasicFileAttributes attrs )
@@ -238,20 +250,14 @@ public class MemoryRecommendationsCommandTest
         return new long[]{pageCacheTotal.longValue(), luceneTotal.longValue()};
     }
 
-    private static void createDatabaseWithNativeIndexes( File storeDir, String databaseName )
+    private static void createDatabaseWithNativeIndexes( File databaseDirectory )
     {
         // Create one index for every provider that we have
         for ( SchemaIndex schemaIndex : SchemaIndex.values() )
         {
-            // todo: remove this if-statement when native_gbptree10 supports spatial
-            if ( schemaIndex == SchemaIndex.NATIVE_BTREE10 )
-            {
-                continue;
-            }
             GraphDatabaseService db =
-                    new TestGraphDatabaseFactory().newEmbeddedDatabaseBuilder( storeDir )
-                            .setConfig( default_schema_provider, schemaIndex.providerIdentifier() )
-                            .setConfig( active_database, databaseName )
+                    new TestGraphDatabaseFactory().newEmbeddedDatabaseBuilder( databaseDirectory )
+                            .setConfig( default_schema_provider, schemaIndex.providerName() )
                             .newGraphDatabase();
             String key = "key-" + schemaIndex.name();
             try
@@ -268,7 +274,7 @@ public class MemoryRecommendationsCommandTest
                     RandomValues randomValues = RandomValues.create();
                     for ( int i = 0; i < 10_000; i++ )
                     {
-                        db.createNode( labelOne ).setProperty( key, randomIndexValue( i, randomValues ).asObject());
+                        db.createNode( labelOne ).setProperty( key, randomValues.nextValue().asObject() );
                     }
                     tx.success();
                 }
@@ -277,37 +283,6 @@ public class MemoryRecommendationsCommandTest
             {
                 db.shutdown();
             }
-        }
-    }
-
-    private static Value randomIndexValue( int i, RandomValues randomValues )
-    {
-        switch ( i % 11 )
-        {
-        case 0:
-            return randomValues.nextIntValue();
-        case 1:
-            return randomValues.nextDigitString();
-        case 2:
-            return randomValues.nextDateValue();
-        case 3:
-            return randomValues.nextDateTimeValue();
-        case 4:
-            return randomValues.nextLocalDateTimeValue();
-        case 5:
-            return randomValues.nextDuration();
-        case 6:
-            return randomValues.nextTimeValue();
-        case 7:
-            return randomValues.nextLocalTimeValue();
-        case 8:
-            return randomValues.nextCartesianPoint();
-        case 9:
-            return randomValues.nextCartesian3DPoint();
-        case 10:
-            return randomValues.nextLongArray(  );
-        default:
-            throw new UnsupportedOperationException( "Unexpected" );
         }
     }
 

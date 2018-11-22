@@ -49,7 +49,7 @@ public class RecordRelationshipScanCursorTest
     private static final long RELATIONSHIP_ID = 1L;
 
     @Rule
-    public final PageCacheAndDependenciesRule storage = new PageCacheAndDependenciesRule( DefaultFileSystemRule::new, getClass() );
+    public final PageCacheAndDependenciesRule storage = new PageCacheAndDependenciesRule().with( new DefaultFileSystemRule() );
     @Rule
     public final RandomRule random = new RandomRule();
 
@@ -81,7 +81,7 @@ public class RecordRelationshipScanCursorTest
         {
             cursor.single( RELATIONSHIP_ID );
             assertTrue( cursor.next() );
-            assertEquals( RELATIONSHIP_ID, cursor.relationshipReference() );
+            assertEquals( RELATIONSHIP_ID, cursor.entityReference() );
         }
     }
 
@@ -153,7 +153,7 @@ public class RecordRelationshipScanCursorTest
             while ( cursor.next() )
             {
                 // then
-                assertTrue( cursor.toString(), expected.remove( cursor.relationshipReference() ) );
+                assertTrue( cursor.toString(), expected.remove( cursor.entityReference() ) );
             }
         }
         assertTrue( expected.isEmpty() );
@@ -167,7 +167,7 @@ public class RecordRelationshipScanCursorTest
     private StoreFactory getStoreFactory()
     {
         return new StoreFactory(
-                storage.directory().databaseDir(), Config.defaults(), new DefaultIdGeneratorFactory( storage.fileSystem() ),
+                storage.directory().databaseLayout(), Config.defaults(), new DefaultIdGeneratorFactory( storage.fileSystem() ),
                 storage.pageCache(), storage.fileSystem(), NullLogProvider.getInstance(), EmptyVersionContextSupplier.EMPTY );
     }
 

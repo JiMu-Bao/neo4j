@@ -23,7 +23,6 @@ import java.io.File;
 import java.io.IOException;
 
 import org.neo4j.index.internal.gbptree.GBPTree;
-import org.neo4j.index.internal.gbptree.Layout;
 import org.neo4j.index.internal.gbptree.RecoveryCleanupWorkCollector;
 import org.neo4j.internal.kernel.api.IndexCapability;
 import org.neo4j.internal.kernel.api.IndexOrder;
@@ -34,28 +33,26 @@ import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.api.index.IndexAccessor;
 import org.neo4j.kernel.api.index.IndexDirectoryStructure;
 import org.neo4j.kernel.api.index.IndexPopulator;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
 import org.neo4j.values.storable.ValueCategory;
 
 /**
  * Schema index provider for native indexes backed by e.g. {@link GBPTree}.
  */
-public class NumberIndexProvider extends NativeIndexProvider<NumberIndexKey,NativeIndexValue>
+public class NumberIndexProvider extends NativeIndexProvider<NumberIndexKey,NativeIndexValue,NumberLayout>
 {
     public static final String KEY = "native";
     public static final IndexProviderDescriptor NATIVE_PROVIDER_DESCRIPTOR = new IndexProviderDescriptor( KEY, "1.0" );
     static final IndexCapability CAPABILITY = new NumberIndexCapability();
 
-    public NumberIndexProvider( PageCache pageCache, FileSystemAbstraction fs,
-                                IndexDirectoryStructure.Factory directoryStructure, Monitor monitor, RecoveryCleanupWorkCollector recoveryCleanupWorkCollector,
-                                boolean readOnly )
+    public NumberIndexProvider( PageCache pageCache, FileSystemAbstraction fs, IndexDirectoryStructure.Factory directoryStructure, Monitor monitor,
+            RecoveryCleanupWorkCollector recoveryCleanupWorkCollector, boolean readOnly )
     {
-        super( NATIVE_PROVIDER_DESCRIPTOR, 0, directoryStructure, pageCache, fs, monitor, recoveryCleanupWorkCollector, readOnly );
+        super( NATIVE_PROVIDER_DESCRIPTOR, directoryStructure, pageCache, fs, monitor, recoveryCleanupWorkCollector, readOnly );
     }
 
     @Override
-    Layout<NumberIndexKey,NativeIndexValue> layout( StoreIndexDescriptor descriptor )
+    NumberLayout layout( StoreIndexDescriptor descriptor, File storeFile )
     {
         // split like this due to legacy reasons, there are old stores out there with these different identifiers
         switch ( descriptor.type() )
@@ -70,22 +67,19 @@ public class NumberIndexProvider extends NativeIndexProvider<NumberIndexKey,Nati
     }
 
     @Override
-    protected IndexPopulator newIndexPopulator( File storeFile, Layout<NumberIndexKey,NativeIndexValue> layout, StoreIndexDescriptor descriptor,
-            IndexSamplingConfig samplingConfig )
+    protected IndexPopulator newIndexPopulator( File storeFile, NumberLayout layout, StoreIndexDescriptor descriptor )
     {
-        return new NumberIndexPopulator( pageCache, fs, storeFile, layout, monitor, descriptor, samplingConfig );
+        return new WorkSyncedNativeIndexPopulator<>( new NumberIndexPopulator( pageCache, fs, storeFile, layout, monitor, descriptor ) );
     }
 
     @Override
-    protected IndexAccessor newIndexAccessor( File storeFile, Layout<NumberIndexKey,NativeIndexValue> layout, StoreIndexDescriptor descriptor,
-            IndexSamplingConfig samplingConfig ) throws IOException
+    protected IndexAccessor newIndexAccessor( File storeFile, NumberLayout layout, StoreIndexDescriptor descriptor ) throws IOException
     {
-        return new NumberIndexAccessor( pageCache, fs, storeFile, layout, recoveryCleanupWorkCollector, monitor, descriptor,
-                samplingConfig );
+        return new NumberIndexAccessor( pageCache, fs, storeFile, layout, recoveryCleanupWorkCollector, monitor, descriptor );
     }
 
     @Override
-    public IndexCapability getCapability()
+    public IndexCapability getCapability( StoreIndexDescriptor descriptor )
     {
         return CAPABILITY;
     }
@@ -104,7 +98,7 @@ public class NumberIndexProvider extends NativeIndexProvider<NumberIndexKey,Nati
         {
             if ( support( valueCategories ) )
             {
-                return ORDER_ASC;
+                return ORDER_BOTH;
             }
             return ORDER_NONE;
         }
@@ -121,6 +115,18 @@ public class NumberIndexProvider extends NativeIndexProvider<NumberIndexKey,Nati
                 return IndexValueCapability.PARTIAL;
             }
             return IndexValueCapability.NO;
+        }
+
+        @Override
+        public boolean isFulltextIndex()
+        {
+            return false;
+        }
+
+        @Override
+        public boolean isEventuallyConsistent()
+        {
+            return false;
         }
 
         private boolean support( ValueCategory[] valueCategories )

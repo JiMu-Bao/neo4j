@@ -33,7 +33,6 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.neo4j.bolt.BoltChannel;
-import org.neo4j.bolt.BoltConnectionDescriptor;
 import org.neo4j.bolt.messaging.RequestMessage;
 import org.neo4j.bolt.runtime.BoltConnection;
 import org.neo4j.bolt.runtime.BoltConnectionFactory;
@@ -47,6 +46,7 @@ import org.neo4j.bolt.runtime.Neo4jError;
 import org.neo4j.bolt.runtime.TransactionStateMachineSPI;
 import org.neo4j.bolt.security.auth.AuthenticationResult;
 import org.neo4j.bolt.testing.BoltResponseRecorder;
+import org.neo4j.bolt.testing.BoltTestUtil;
 import org.neo4j.bolt.testing.RecordedBoltResponse;
 import org.neo4j.bolt.transport.TransportThrottleGroup;
 import org.neo4j.bolt.v1.messaging.request.DiscardAllMessage;
@@ -57,11 +57,11 @@ import org.neo4j.bolt.v1.messaging.request.RunMessage;
 import org.neo4j.helpers.collection.Iterables;
 import org.neo4j.kernel.configuration.BoltConnector;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.logging.NullLogService;
-import org.neo4j.kernel.impl.scheduler.CentralJobScheduler;
 import org.neo4j.kernel.lifecycle.LifeSupport;
 import org.neo4j.kernel.monitoring.Monitors;
 import org.neo4j.logging.NullLog;
+import org.neo4j.logging.internal.NullLogService;
+import org.neo4j.scheduler.JobScheduler;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyMap;
@@ -74,6 +74,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.neo4j.bolt.testing.NullResponseHandler.nullResponseHandler;
 import static org.neo4j.bolt.v1.messaging.BoltResponseMessage.SUCCESS;
+import static org.neo4j.kernel.impl.scheduler.JobSchedulerFactory.createScheduler;
 import static org.neo4j.values.virtual.VirtualValues.EMPTY_MAP;
 
 public class ResetFuzzTest
@@ -92,15 +93,16 @@ public class ResetFuzzTest
     /** We track the number of un-closed transactions, and fail if we ever leak one */
     private final AtomicLong liveTransactions = new AtomicLong();
     private final Monitors monitors = new Monitors();
-    private final CentralJobScheduler scheduler = life.add( new CentralJobScheduler() );
+    private final JobScheduler scheduler = life.add( createScheduler() );
+    private final Config config = createConfig();
     private final BoltSchedulerProvider boltSchedulerProvider = life.add(
-            new ExecutorBoltSchedulerProvider( createConfig(), new CachedThreadPoolExecutorFactory( NullLog.getInstance() ), scheduler,
+            new ExecutorBoltSchedulerProvider( config, new CachedThreadPoolExecutorFactory( NullLog.getInstance() ), scheduler,
                     NullLogService.getInstance() ) );
     private final Clock clock = Clock.systemUTC();
-    private final BoltStateMachine machine = new BoltStateMachineV1( new FuzzStubSPI(), mock( BoltChannel.class ), clock );
+    private final BoltStateMachine machine = new BoltStateMachineV1( new FuzzStubSPI(), BoltTestUtil.newTestBoltChannel(), clock );
     private final BoltConnectionFactory connectionFactory =
             new DefaultBoltConnectionFactory( boltSchedulerProvider, TransportThrottleGroup.NO_THROTTLE,
-                    NullLogService.getInstance(), clock, null, monitors );
+                    config, NullLogService.getInstance(), clock, monitors );
     private BoltChannel boltChannel;
 
     private final List<List<RequestMessage>> sequences = asList(
@@ -196,11 +198,6 @@ public class ResetFuzzTest
      */
     private class FuzzStubSPI implements BoltStateMachineSPI
     {
-        @Override
-        public BoltConnectionDescriptor connectionDescriptor()
-        {
-            return boltChannel;
-        }
 
         @Override
         public TransactionStateMachineSPI transactionSpi()

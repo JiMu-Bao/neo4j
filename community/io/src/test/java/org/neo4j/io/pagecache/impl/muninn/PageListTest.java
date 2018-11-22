@@ -51,6 +51,7 @@ import org.neo4j.io.pagecache.tracing.FlushEvent;
 import org.neo4j.io.pagecache.tracing.FlushEventOpportunity;
 import org.neo4j.io.pagecache.tracing.PageFaultEvent;
 import org.neo4j.memory.GlobalMemoryTracker;
+import org.neo4j.scheduler.DaemonThreadFactory;
 import org.neo4j.unsafe.impl.internal.dragons.UnsafeUtil;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -94,6 +95,7 @@ public class PageListTest
     @AfterClass
     public static void tearDownStatics()
     {
+        mman.close();
         mman = null;
         executor.shutdown();
         executor = null;

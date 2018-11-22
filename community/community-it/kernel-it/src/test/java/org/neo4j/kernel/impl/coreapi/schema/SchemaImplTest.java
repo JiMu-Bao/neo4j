@@ -19,51 +19,62 @@
  */
 package org.neo4j.kernel.impl.coreapi.schema;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-
-import java.io.File;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.index.IndexPopulationProgress;
+import org.neo4j.graphdb.mockfs.EphemeralFileSystemAbstraction;
 import org.neo4j.graphdb.schema.IndexDefinition;
 import org.neo4j.graphdb.schema.Schema;
 import org.neo4j.helpers.collection.Iterables;
+import org.neo4j.internal.kernel.api.IndexReference;
 import org.neo4j.test.TestGraphDatabaseFactory;
-import org.neo4j.test.rule.fs.EphemeralFileSystemRule;
+import org.neo4j.test.extension.EphemeralFileSystemExtension;
+import org.neo4j.test.extension.Inject;
+import org.neo4j.test.extension.TestDirectoryExtension;
+import org.neo4j.test.rule.TestDirectory;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@ExtendWith( {EphemeralFileSystemExtension.class, TestDirectoryExtension.class} )
 public class SchemaImplTest
 {
-    @Rule
-    public EphemeralFileSystemRule fs = new EphemeralFileSystemRule();
+    private static final Label USER_LABEL = Label.label( "User" );
+
+    @Inject
+    private EphemeralFileSystemAbstraction fs;
+    @Inject
+    private TestDirectory testDirectory;
+
     private GraphDatabaseService db;
 
-    @Before
-    public void createDb()
+    @BeforeEach
+    void createDb()
     {
-        db = new TestGraphDatabaseFactory().setFileSystem( fs.get() ).newImpermanentDatabase( new File( "mydb" ) );
+        db = new TestGraphDatabaseFactory().setFileSystem( fs ).newImpermanentDatabase( testDirectory.databaseDir() );
     }
 
-    @After
-    public void shutdownDb()
+    @AfterEach
+    void shutdownDb()
     {
         db.shutdown();
     }
 
     @Test
-    public void testGetIndexPopulationProgress() throws Exception
+    void testGetIndexPopulationProgress() throws Exception
     {
-        assertFalse( indexExists( Label.label( "User" ) ) );
+        assertFalse( indexExists( USER_LABEL ) );
 
         // Create some nodes
         try ( Transaction tx = db.beginTx() )
@@ -84,9 +95,7 @@ public class SchemaImplTest
         try ( Transaction tx = db.beginTx() )
         {
             Schema schema = db.schema();
-            indexDefinition = schema.indexFor( Label.label( "User" ) )
-                    .on( "username" )
-                    .create();
+            indexDefinition = schema.indexFor( USER_LABEL ).on( "username" ).create();
             tx.success();
         }
 
@@ -109,7 +118,36 @@ public class SchemaImplTest
             while ( state == Schema.IndexState.POPULATING );
 
             assertSame( state, Schema.IndexState.ONLINE );
-            assertEquals( 100.0f, progress.getCompletedPercentage(), 0.0f );
+            assertEquals( 100.0, progress.getCompletedPercentage(), 0.0001 );
+        }
+    }
+
+    @Test
+    void createdIndexDefinitionsMustBeUnnamed()
+    {
+        try ( Transaction tx = db.beginTx() )
+        {
+            IndexDefinition index = db.schema().indexFor( USER_LABEL ).on( "name" ).create();
+            assertThat( index.getName(), is( IndexReference.UNNAMED_INDEX ) );
+            tx.success();
+        }
+    }
+
+    @Test
+    void mustRememberNamesOfCreatedIndex()
+    {
+        String indexName = "Users index";
+        try ( Transaction tx = db.beginTx() )
+        {
+            IndexDefinition index = db.schema().indexFor( USER_LABEL ).on( "name" ).withName( indexName ).create();
+            assertThat( index.getName(), is( indexName ) );
+            tx.success();
+        }
+        try ( Transaction tx = db.beginTx() )
+        {
+            IndexDefinition index = db.schema().getIndexByName( indexName );
+            assertThat( index.getName(), is( indexName ) );
+            tx.success();
         }
     }
 

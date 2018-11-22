@@ -35,6 +35,7 @@ import java.util.concurrent.Future;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.graphdb.schema.IndexDefinition;
 import org.neo4j.graphdb.schema.Schema;
 import org.neo4j.internal.kernel.api.InternalIndexState;
@@ -52,6 +53,7 @@ import org.neo4j.kernel.extension.KernelExtensionFactory;
 import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.kernel.impl.api.index.updater.SwallowingIndexUpdater;
 import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
+import org.neo4j.kernel.impl.index.schema.CollectingIndexUpdater;
 import org.neo4j.kernel.impl.storemigration.StoreMigrationParticipant;
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer;
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo;
@@ -75,6 +77,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.neo4j.graphdb.Label.label;
 import static org.neo4j.kernel.impl.api.index.SchemaIndexTestHelper.singleInstanceIndexProviderFactory;
+import static org.neo4j.kernel.impl.api.index.TestIndexProviderDescriptor.PROVIDER_DESCRIPTOR;
 import static org.neo4j.test.mockito.matcher.Neo4jMatchers.getIndexes;
 import static org.neo4j.test.mockito.matcher.Neo4jMatchers.hasSize;
 import static org.neo4j.test.mockito.matcher.Neo4jMatchers.haveState;
@@ -232,7 +235,7 @@ public class IndexRecoveryIT
     public EphemeralFileSystemRule fs = new EphemeralFileSystemRule();
     private final IndexProvider mockedIndexProvider = mock( IndexProvider.class );
     private final KernelExtensionFactory<?> mockedIndexProviderFactory =
-            singleInstanceIndexProviderFactory( TestIndexProviderDescriptor.PROVIDER_DESCRIPTOR.getKey(),
+            singleInstanceIndexProviderFactory( PROVIDER_DESCRIPTOR.getKey(),
                     mockedIndexProvider );
     private final String key = "number_of_bananas_owned";
     private final Label myLabel = label( "MyLabel" );
@@ -240,12 +243,8 @@ public class IndexRecoveryIT
     @Before
     public void setUp()
     {
-        when( mockedIndexProvider.getProviderDescriptor() )
-                .thenReturn( TestIndexProviderDescriptor.PROVIDER_DESCRIPTOR );
-        when( mockedIndexProvider.compareTo( any( IndexProvider.class ) ) )
-                .thenReturn( 1 ); // always pretend to have highest priority
-        when( mockedIndexProvider.storeMigrationParticipant( any( FileSystemAbstraction.class ),
-                any( PageCache.class ) ) )
+        when( mockedIndexProvider.getProviderDescriptor() ).thenReturn( PROVIDER_DESCRIPTOR );
+        when( mockedIndexProvider.storeMigrationParticipant( any( FileSystemAbstraction.class ), any( PageCache.class ) ) )
                 .thenReturn( StoreMigrationParticipant.NOT_PARTICIPATING );
     }
 
@@ -259,7 +258,8 @@ public class IndexRecoveryIT
         TestGraphDatabaseFactory factory = new TestGraphDatabaseFactory();
         factory.setFileSystem( fs.get() );
         factory.setKernelExtensions( Arrays.asList( mockedIndexProviderFactory ) );
-        db = (GraphDatabaseAPI) factory.newImpermanentDatabase();
+        db = (GraphDatabaseAPI) factory.newImpermanentDatabaseBuilder()
+                .setConfig( GraphDatabaseSettings.default_schema_provider, PROVIDER_DESCRIPTOR.name() ).newGraphDatabase();
     }
 
     private void killDb() throws Exception
@@ -355,30 +355,26 @@ public class IndexRecoveryIT
         @Override
         public IndexUpdater newUpdater( final IndexUpdateMode mode )
         {
-            return new CollectingIndexUpdater()
+            return new CollectingIndexUpdater( updates ->
             {
-                @Override
-                public void close()
+                switch ( mode )
                 {
-                    switch ( mode )
-                    {
-                        case ONLINE:
-                            regularUpdates.addAll( updates );
-                            break;
+                    case ONLINE:
+                        regularUpdates.addAll( updates );
+                        break;
 
-                        case RECOVERY:
-                            batchedUpdates.addAll( updates );
-                            break;
+                    case RECOVERY:
+                        batchedUpdates.addAll( updates );
+                        break;
 
-                        default:
-                            throw new UnsupportedOperationException(  );
-                    }
+                    default:
+                        throw new UnsupportedOperationException(  );
                 }
-            };
+            } );
         }
     }
 
-    private IndexPopulator indexPopulatorWithControlledCompletionTiming( final CountDownLatch latch )
+    private static IndexPopulator indexPopulatorWithControlledCompletionTiming( final CountDownLatch latch )
     {
         return new IndexPopulator.Adapter()
         {

@@ -34,8 +34,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
-import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.TransactionTerminatedException;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.internal.kernel.api.exceptions.TransactionFailureException;
 import org.neo4j.internal.kernel.api.security.LoginContext;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
@@ -43,7 +43,9 @@ import org.neo4j.io.pagecache.tracing.cursor.DefaultPageCursorTracer;
 import org.neo4j.kernel.api.KernelTransaction;
 import org.neo4j.kernel.api.exceptions.Status;
 import org.neo4j.kernel.api.security.AnonymousContext;
+import org.neo4j.kernel.api.txstate.ExplicitIndexTransactionState;
 import org.neo4j.kernel.api.txstate.TransactionState;
+import org.neo4j.kernel.api.txstate.auxiliary.AuxiliaryTransactionState;
 import org.neo4j.kernel.impl.locking.Locks;
 import org.neo4j.kernel.impl.locking.NoOpClient;
 import org.neo4j.kernel.impl.locking.SimpleStatementLocks;
@@ -371,6 +373,15 @@ public class KernelTransactionImplementationTest extends KernelTransactionTestBa
     {
         // GIVEN a transaction starting at one point in time
         long startingTime = clock.millis();
+        ExplicitIndexTransactionState explicitIndexState = mock( ExplicitIndexTransactionState.class );
+        auxTxStateManager.registerProvider( new ExplicitIndexTransactionStateProvider( null, null )
+        {
+            @Override
+            public AuxiliaryTransactionState createNewAuxiliaryTransactionState()
+            {
+                return explicitIndexState;
+            }
+        });
         when( explicitIndexState.hasChanges() ).thenReturn( true );
         doAnswer( invocation ->
         {
@@ -451,7 +462,7 @@ public class KernelTransactionImplementationTest extends KernelTransactionTestBa
         transaction.close();
         SimpleStatementLocks statementLocks = new SimpleStatementLocks( new NoOpClient() );
         transaction.initialize( 1, BASE_TX_COMMIT_TIMESTAMP, statementLocks, KernelTransaction.Type.implicit,
-                loginContext().authorize( s -> -1, DatabaseManager.DEFAULT_DATABASE_NAME ), 0L, 1L );
+                loginContext().authorize( s -> -1, GraphDatabaseSettings.DEFAULT_DATABASE_NAME ), 0L, 1L );
 
         // THEN
         assertEquals( reuseCount + 1, transaction.getReuseCount() );
@@ -673,7 +684,7 @@ public class KernelTransactionImplementationTest extends KernelTransactionTestBa
         Locks.Client locksClient = mock( Locks.Client.class );
         SimpleStatementLocks statementLocks = new SimpleStatementLocks( locksClient );
         tx.initialize( 42, 42, statementLocks, KernelTransaction.Type.implicit,
-                loginContext().authorize( s -> -1, DatabaseManager.DEFAULT_DATABASE_NAME ), 0L, 0L );
+                loginContext().authorize( s -> -1, GraphDatabaseSettings.DEFAULT_DATABASE_NAME ), 0L, 0L );
 
         assertTrue( tx.markForTermination( reuseCount, terminationReason ) );
 
@@ -694,7 +705,7 @@ public class KernelTransactionImplementationTest extends KernelTransactionTestBa
         Locks.Client locksClient = mock( Locks.Client.class );
         SimpleStatementLocks statementLocks = new SimpleStatementLocks( locksClient );
         tx.initialize( 42, 42, statementLocks, KernelTransaction.Type.implicit,
-                loginContext().authorize( s -> -1, DatabaseManager.DEFAULT_DATABASE_NAME ), 0L, 0L );
+                loginContext().authorize( s -> -1, GraphDatabaseSettings.DEFAULT_DATABASE_NAME ), 0L, 0L );
 
         assertFalse( tx.markForTermination( nextReuseCount, terminationReason ) );
 
@@ -762,7 +773,7 @@ public class KernelTransactionImplementationTest extends KernelTransactionTestBa
         {
             SimpleStatementLocks statementLocks = new SimpleStatementLocks( new NoOpClient() );
             tx.initialize( i + 10, i + 10, statementLocks, KernelTransaction.Type.implicit,
-                    loginContext().authorize( s -> -1, DatabaseManager.DEFAULT_DATABASE_NAME ), 0L, 0L );
+                    loginContext().authorize( s -> -1, GraphDatabaseSettings.DEFAULT_DATABASE_NAME ), 0L, 0L );
             tx.close();
         }
     }

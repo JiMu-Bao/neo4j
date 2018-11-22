@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit
 import org.neo4j.cypher.ExecutionEngineFunSuite
 import org.neo4j.values.storable._
 import org.neo4j.values.utils.TemporalUtil
+import org.scalacheck.{Gen, Shrink}
 import org.scalacheck.Arbitrary.arbitrary
 import org.scalacheck.Gen
 import org.scalatest.matchers.{MatchResult, Matcher}
@@ -44,7 +45,10 @@ import scala.collection.JavaConversions._
   * }}}
   *
   */
-class SemanticIndexpAcceptanceTest extends ExecutionEngineFunSuite with PropertyChecks {
+class SemanticIndexAcceptanceTest extends ExecutionEngineFunSuite with PropertyChecks {
+
+  //we don't want scala check to shrink strings since it hides the actual error
+  implicit val dontShrink: Shrink[String] = Shrink(s => Stream.empty)
 
   private val allCRS: Map[Int, Array[CoordinateReferenceSystem]] = CoordinateReferenceSystem.all().toArray.groupBy(_.getDimension)
   private val allCRSDimensions = allCRS.keys.toArray

@@ -41,7 +41,8 @@ public class RelationshipTypeTokenStore extends TokenStore<RelationshipTypeToken
     public static final String TYPE_DESCRIPTOR = "RelationshipTypeStore";
 
     public RelationshipTypeTokenStore(
-            File fileName,
+            File file,
+            File idFile,
             Config config,
             IdGeneratorFactory idGeneratorFactory,
             PageCache pageCache,
@@ -50,7 +51,7 @@ public class RelationshipTypeTokenStore extends TokenStore<RelationshipTypeToken
             RecordFormats recordFormats,
             OpenOption... openOptions )
     {
-        super( fileName, config, IdType.RELATIONSHIP_TYPE_TOKEN, idGeneratorFactory, pageCache, logProvider, nameStore,
+        super( file, idFile, config, IdType.RELATIONSHIP_TYPE_TOKEN, idGeneratorFactory, pageCache, logProvider, nameStore,
                 TYPE_DESCRIPTOR, recordFormats.relationshipTypeToken(),
                 recordFormats.storeVersion(), openOptions );
     }

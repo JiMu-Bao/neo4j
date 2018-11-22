@@ -26,7 +26,7 @@ import org.neo4j.cypher.internal._
 import org.neo4j.cypher.internal.compatibility._
 import org.neo4j.cypher.internal.compatibility.v3_1.helpers._
 import org.neo4j.cypher.internal.compiler.v3_1
-import org.neo4j.cypher.internal.compiler.v3_1.executionplan.{InternalExecutionResult, ExecutionPlan => ExecutionPlan_v3_1}
+import org.neo4j.cypher.internal.compiler.v3_1.executionplan.{ExecutionPlan => ExecutionPlan_v3_1, InternalExecutionResult => InternalExecutionResult3_1}
 import org.neo4j.cypher.internal.compiler.v3_1.tracing.rewriters.RewriterStepSequencer
 import org.neo4j.cypher.internal.compiler.v3_1.{InfoLogger, ExplainMode => ExplainModev3_1, NormalMode => NormalModev3_1, ProfileMode => ProfileModev3_1, _}
 import org.neo4j.cypher.internal.frontend.v3_1.{InputPosition => InputPosition3_1}
@@ -35,7 +35,7 @@ import org.neo4j.cypher.internal.runtime.interpreted.ValueConversion
 import org.neo4j.cypher.internal.spi.v3_1.TransactionBoundQueryContext.IndexSearchMonitor
 import org.neo4j.cypher.internal.spi.v3_1.{TransactionalContextWrapper => TransactionalContextWrapperV3_1, _}
 import org.neo4j.function.ThrowingBiConsumer
-import org.neo4j.graphdb.Result
+import org.neo4j.graphdb.{Notification, Result}
 import org.neo4j.kernel.GraphDatabaseQueryService
 import org.neo4j.kernel.api.query.{CompilerInfo, IndexUsage}
 import org.neo4j.kernel.impl.query.{QueryExecutionMonitor, TransactionalContext}
@@ -43,7 +43,7 @@ import org.neo4j.kernel.monitoring.{Monitors => KernelMonitors}
 import org.neo4j.logging.Log
 import org.neo4j.values.AnyValue
 import org.neo4j.values.virtual.MapValue
-import org.opencypher.v9_0.{frontend => v3_5}
+import org.opencypher.v9_0.frontend.phases
 
 import scala.collection.mutable
 
@@ -64,7 +64,7 @@ trait Cypher31Compiler extends CachingPlanner[PreparedQuerySyntax] with Compiler
 
   protected val compiler: v3_1.CypherCompiler
 
-  implicit val executionMonitor: QueryExecutionMonitor = kernelMonitors.newMonitor(classOf[QueryExecutionMonitor])
+  private val executionMonitor: QueryExecutionMonitor = kernelMonitors.newMonitor(classOf[QueryExecutionMonitor])
 
   class Cypher31ExecutableQuery(inner: ExecutionPlan_v3_1,
                                 preParsingNotifications: Set[org.neo4j.graphdb.Notification],
@@ -89,13 +89,20 @@ trait Cypher31Compiler extends CachingPlanner[PreparedQuerySyntax] with Compiler
       }
       exceptionHandler.runSafely {
         val innerParams = typeConversions.asPrivateMap(params)
-        val innerResult: InternalExecutionResult = inner
-          .run(queryContext(transactionalContext), innerExecutionMode, innerParams)
-        new ExecutionResult(
-          new ClosingExecutionResult(
+        val innerResult: InternalExecutionResult3_1 =
+          inner.run(queryContext(transactionalContext), innerExecutionMode, innerParams)
+        new ExecutionResult( // javacompat
+          new CompatibilityClosingExecutionResult( // closing
             transactionalContext.executingQuery(),
-            new ExecutionResultWrapper(innerResult, inner.plannerUsed, inner.runtimeUsed, preParsingNotifications, Some(offSet)),
-            exceptionHandler.runSafely)
+            new ExecutionResultWrapper( // 3.5 wrapping
+              innerResult, // 3.1
+              inner.plannerUsed,
+              inner.runtimeUsed,
+              preParsingNotifications,
+              Some(offSet)
+            ),
+            exceptionHandler.runSafely
+          )(executionMonitor)
         )
       }
     }
@@ -112,19 +119,19 @@ trait Cypher31Compiler extends CachingPlanner[PreparedQuerySyntax] with Compiler
 
     override val compilerInfo = new CompilerInfo(inner.plannerUsed.name, inner.runtimeUsed.name, emptyList[IndexUsage])
 
-    override def execute(transactionalContext: TransactionalContext, executionMode: CypherExecutionMode, params: MapValue): Result = {
+    override def execute(transactionalContext: TransactionalContext, preParsedQuery: PreParsedQuery, params: MapValue): Result = {
       var map: mutable.Map[String, Any] = mutable.Map[String, Any]()
       params.foreach(new ThrowingBiConsumer[String, AnyValue, RuntimeException] {
         override def accept(t: String, u: AnyValue): Unit = map.put(t, valueHelper.fromValue(u))
       })
 
-      run(transactionalContext, executionMode, map.toMap)
+      run(transactionalContext, preParsedQuery.executionMode, map.toMap)
     }
   }
 
   override def compile(preParsedQuery: PreParsedQuery,
-                       tracer: v3_5.phases.CompilationPhaseTracer,
-                       preParsingNotifications: Set[org.neo4j.graphdb.Notification],
+                       tracer: phases.CompilationPhaseTracer,
+                       preParsingNotifications: Set[Notification],
                        transactionalContext: TransactionalContext,
                        params: MapValue
                       ): ExecutableQuery = {

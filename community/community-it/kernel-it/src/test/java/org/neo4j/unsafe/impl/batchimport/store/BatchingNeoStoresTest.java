@@ -34,7 +34,6 @@ import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.io.pagecache.tracing.PageCacheTracer;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.MyRelTypes;
-import org.neo4j.kernel.impl.logging.NullLogService;
 import org.neo4j.kernel.impl.store.PropertyStore;
 import org.neo4j.kernel.impl.store.RecordStore;
 import org.neo4j.kernel.impl.store.RelationshipStore;
@@ -47,6 +46,9 @@ import org.neo4j.kernel.impl.store.record.PropertyBlock;
 import org.neo4j.kernel.impl.store.record.PropertyRecord;
 import org.neo4j.kernel.impl.store.record.RelationshipRecord;
 import org.neo4j.logging.NullLogProvider;
+import org.neo4j.logging.internal.NullLogService;
+import org.neo4j.scheduler.JobScheduler;
+import org.neo4j.scheduler.ThreadPoolJobScheduler;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.rule.PageCacheAndDependenciesRule;
 import org.neo4j.unsafe.impl.batchimport.input.Input.Estimates;
@@ -79,11 +81,11 @@ public class BatchingNeoStoresTest
         someDataInTheDatabase();
 
         // WHEN
-        try
+        try ( JobScheduler jobScheduler = new ThreadPoolJobScheduler() )
         {
             RecordFormats recordFormats = RecordFormatSelector.selectForConfig( Config.defaults(), NullLogProvider.getInstance() );
             try ( BatchingNeoStores store = BatchingNeoStores.batchingNeoStores( storage.fileSystem(), storage.directory().databaseDir(), recordFormats,
-                    DEFAULT, NullLogService.getInstance(), EMPTY, Config.defaults() ) )
+                    DEFAULT, NullLogService.getInstance(), EMPTY, Config.defaults(), jobScheduler ) )
             {
                 store.createNew();
                 fail( "Should fail on existing data" );
@@ -108,8 +110,9 @@ public class BatchingNeoStoresTest
         // WHEN
         RecordFormats recordFormats = LATEST_RECORD_FORMATS;
         int headerSize = recordFormats.dynamic().getRecordHeaderSize();
-        try ( BatchingNeoStores store = BatchingNeoStores.batchingNeoStores( storage.fileSystem(), storage.directory().absolutePath(),
-                recordFormats, DEFAULT, NullLogService.getInstance(), EMPTY, config ) )
+        try ( JobScheduler jobScheduler = new ThreadPoolJobScheduler();
+              BatchingNeoStores store = BatchingNeoStores.batchingNeoStores( storage.fileSystem(), storage.directory().absolutePath(),
+              recordFormats, DEFAULT, NullLogService.getInstance(), EMPTY, config, jobScheduler ) )
         {
             store.createNew();
 
@@ -284,7 +287,7 @@ public class BatchingNeoStoresTest
     {
         GraphDatabaseService db = new TestGraphDatabaseFactory()
                 .setFileSystem( new UncloseableDelegatingFileSystemAbstraction( storage.fileSystem() ) )
-                .newImpermanentDatabase( storage.directory().absolutePath() );
+                .newImpermanentDatabase( storage.directory().databaseDir() );
         try ( Transaction tx = db.beginTx() )
         {
             db.createNode().createRelationshipTo( db.createNode(), MyRelTypes.TEST );

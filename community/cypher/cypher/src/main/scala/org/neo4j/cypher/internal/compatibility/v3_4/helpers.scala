@@ -32,8 +32,8 @@ import org.neo4j.cypher.internal.frontend.v3_4.{PlannerName => PlannerNameV3_4, 
 import org.neo4j.cypher.internal.ir.{v3_4 => irV3_4, v3_5 => irv3_5}
 import org.neo4j.cypher.internal.planner.v3_4.spi.PlanningAttributes.{Cardinalities => CardinalitiesV3_4, Solveds => SolvedsV3_4}
 import org.neo4j.cypher.internal.planner.v3_4.{spi => spiV3_4}
-import org.neo4j.cypher.internal.planner.v3_5.spi.PlanningAttributes.{Cardinalities => CardinalitiesV3_5, Solveds => SolvedsV3_5}
-import org.neo4j.cypher.internal.planner.v3_5.spi.{DPPlannerName, IDPPlannerName, PlannerNameWithVersion, ProcedurePlannerName}
+import org.neo4j.cypher.internal.planner.v3_5.spi.PlanningAttributes.{ProvidedOrders, Cardinalities => CardinalitiesV3_5, Solveds => SolvedsV3_5}
+import org.neo4j.cypher.internal.planner.v3_5.spi._
 import org.neo4j.cypher.internal.util.v3_4.attribution.{Id => IdV3_4}
 import org.neo4j.cypher.internal.util.v3_4.{Cardinality => CardinalityV3_4, InputPosition => InputPositionV3_4}
 import org.neo4j.cypher.internal.v3_4.expressions.{Expression => ExpressionV3_4}
@@ -64,7 +64,8 @@ object helpers {
       config.legacyCsvQuoteEscaping,
       config.csvBufferSize,
       config.nonIndexedLabelWarningThreshold,
-      config.planWithMinimumCardinalityEstimates)
+      config.planWithMinimumCardinalityEstimates,
+      config.lenientCreateRelationship)
 
 
   /** This is awful but needed until 3_0 is updated no to send in the tracer here */
@@ -150,7 +151,7 @@ object helpers {
     case nfV3_4.DeprecatedFieldNotification(position, procedure, field) => compilerv3_5.DeprecatedFieldNotification(as3_5(position), procedure, field)
     case nfV3_4.DeprecatedVarLengthBindingNotification(position, variable) => nfv3_5.DeprecatedVarLengthBindingNotification(as3_5(position), variable)
     case nfV3_4.DeprecatedRelTypeSeparatorNotification(position) => nfv3_5.DeprecatedRelTypeSeparatorNotification(as3_5(position))
-    case nfV3_4.DeprecatedPlannerNotification => compilerv3_5.DeprecatedPlannerNotification
+    case nfV3_4.DeprecatedPlannerNotification => compilerv3_5.DeprecatedRulePlannerNotification
     case nfV3_4.ExperimentalFeatureNotification(msg) => compilerv3_5.ExperimentalFeatureNotification(msg)
     case nfV3_4.SuboptimalIndexForContainsQueryNotification(label, propertyKeys) => compilerv3_5.SuboptimalIndexForConstainsQueryNotification(label, propertyKeys)
     case nfV3_4.SuboptimalIndexForEndsWithQueryNotification(label, propertyKeys) => compilerv3_5.SuboptimalIndexForEndsWithQueryNotification(label, propertyKeys)
@@ -166,6 +167,7 @@ object helpers {
 
     val solveds3_5 = new SolvedsV3_5
     val cardinalities3_5 = new CardinalitiesV3_5
+    val providedOrders = new ProvidedOrders
     val (plan3_4, semanticTable3_4) = convertLogicalPlan(logicalPlanState, solveds3_4, cardinalities3_4, solveds3_5, cardinalities3_5)
 
     val statement3_4 = logicalPlanState.maybeStatement.get
@@ -173,8 +175,7 @@ object helpers {
     LogicalPlanState(logicalPlanState.queryText,
                      startPosition,
                      plannerName,
-                     solveds3_5,
-                     cardinalities3_5,
+                     PlanningAttributes(solveds3_5, cardinalities3_5, providedOrders),
                      Some(as3_5(statement3_4)),
                      None,
                      logicalPlanState.maybeExtractedParams,

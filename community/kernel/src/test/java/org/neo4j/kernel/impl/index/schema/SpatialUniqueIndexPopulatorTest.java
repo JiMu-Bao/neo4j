@@ -24,11 +24,10 @@ import java.io.File;
 import org.neo4j.gis.spatial.index.curves.StandardConfiguration;
 import org.neo4j.kernel.api.schema.index.TestIndexDescriptorFactory;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
 import org.neo4j.kernel.impl.index.schema.config.ConfiguredSpaceFillingCurveSettingsCache;
 import org.neo4j.values.storable.CoordinateReferenceSystem;
 
-public class SpatialUniqueIndexPopulatorTest extends NativeUniqueIndexPopulatorTest<SpatialIndexKey,NativeIndexValue>
+public class SpatialUniqueIndexPopulatorTest extends NativeIndexPopulatorTests.Unique<SpatialIndexKey,NativeIndexValue>
 {
     private static final CoordinateReferenceSystem crs = CoordinateReferenceSystem.WGS84;
     private static final ConfiguredSpaceFillingCurveSettingsCache configuredSettings = new ConfiguredSpaceFillingCurveSettingsCache( Config.defaults() );
@@ -36,10 +35,10 @@ public class SpatialUniqueIndexPopulatorTest extends NativeUniqueIndexPopulatorT
     private SpatialIndexFiles.SpatialFile spatialFile;
 
     @Override
-    NativeIndexPopulator<SpatialIndexKey,NativeIndexValue> createPopulator( IndexSamplingConfig samplingConfig )
+    NativeIndexPopulator<SpatialIndexKey,NativeIndexValue> createPopulator()
     {
         spatialFile = new SpatialIndexFiles.SpatialFile( crs, configuredSettings, super.getIndexFile() );
-        return new SpatialIndexPopulator.PartPopulator( pageCache, fs, spatialFile.getLayoutForNewIndex(), monitor, indexDescriptor, samplingConfig,
+        return new SpatialIndexPopulator.PartPopulator( pageCache, fs, spatialFile.getLayoutForNewIndex(), monitor, indexDescriptor,
                 new StandardConfiguration() );
     }
 
@@ -50,9 +49,28 @@ public class SpatialUniqueIndexPopulatorTest extends NativeUniqueIndexPopulatorT
     }
 
     @Override
-    protected LayoutTestUtil<SpatialIndexKey,NativeIndexValue> createLayoutTestUtil()
+    protected ValueCreatorUtil<SpatialIndexKey,NativeIndexValue> createValueCreatorUtil()
     {
-        return new UniqueLayoutTestUtil<>(
-                new SpatialLayoutTestUtil( TestIndexDescriptorFactory.uniqueForLabel( 42, 666 ), configuredSettings.forCRS( crs ), crs ) );
+        return new SpatialValueCreatorUtil( TestIndexDescriptorFactory.uniqueForLabel( 42, 666 ).withId( 0 ), ValueCreatorUtil.FRACTION_DUPLICATE_UNIQUE );
+    }
+
+    @Override
+    IndexLayout<SpatialIndexKey,NativeIndexValue> createLayout()
+    {
+        return new SpatialLayout( crs, configuredSettings.forCRS( crs ).curve() );
+    }
+
+    @Override
+    public void addShouldThrowOnDuplicateValues()
+    {   // Spatial can not throw on duplicate values during population because it
+        // might throw for points that are in fact unique. Instead, uniqueness will
+        // be verified by ConstraintIndexCreator when population is finished.
+    }
+
+    @Override
+    public void updaterShouldThrowOnDuplicateValues()
+    {   // Spatial can not throw on duplicate values during population because it
+        // might throw for points that are in fact unique. Instead, uniqueness will
+        // be verified by ConstraintIndexCreator when population is finished.
     }
 }

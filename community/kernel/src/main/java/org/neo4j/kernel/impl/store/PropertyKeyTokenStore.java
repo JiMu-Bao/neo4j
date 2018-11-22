@@ -39,7 +39,8 @@ public class PropertyKeyTokenStore extends TokenStore<PropertyKeyTokenRecord>
     public static final String TYPE_DESCRIPTOR = "PropertyIndexStore";
 
     public PropertyKeyTokenStore(
-            File fileName,
+            File file,
+            File idFile,
             Config config,
             IdGeneratorFactory idGeneratorFactory,
             PageCache pageCache,
@@ -48,9 +49,8 @@ public class PropertyKeyTokenStore extends TokenStore<PropertyKeyTokenRecord>
             RecordFormats recordFormats,
             OpenOption... openOptions )
     {
-        super( fileName, config, IdType.PROPERTY_KEY_TOKEN, idGeneratorFactory, pageCache, logProvider, nameStore,
-                TYPE_DESCRIPTOR, recordFormats.propertyKeyToken(), recordFormats.storeVersion(),
-                openOptions );
+        super( file, idFile, config, IdType.PROPERTY_KEY_TOKEN, idGeneratorFactory, pageCache, logProvider, nameStore, TYPE_DESCRIPTOR,
+                recordFormats.propertyKeyToken(), recordFormats.storeVersion(), openOptions );
     }
 
     @Override

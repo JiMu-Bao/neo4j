@@ -26,7 +26,9 @@ import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.io.pagecache.PageCache;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.factory.OperationalMode;
+import org.neo4j.kernel.impl.index.schema.ConsistencyCheckableIndexPopulator;
 import org.neo4j.kernel.impl.index.schema.GenericNativeIndexProviderFactory;
+import org.neo4j.kernel.impl.index.schema.NativeIndexAccessor;
 
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.SchemaIndex.NATIVE_BTREE10;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.default_schema_provider;
@@ -38,17 +40,16 @@ public class GenericIndexProviderCompatibilitySuiteTest extends IndexProviderCom
     protected IndexProvider createIndexProvider( PageCache pageCache, FileSystemAbstraction fs, File graphDbDir )
     {
         IndexProvider.Monitor monitor = IndexProvider.Monitor.EMPTY;
-        Config config = Config.defaults( stringMap( default_schema_provider.name(), NATIVE_BTREE10.providerIdentifier() ) );
+        Config config = Config.defaults( stringMap( default_schema_provider.name(), NATIVE_BTREE10.providerName() ) );
         OperationalMode mode = OperationalMode.single;
-        RecoveryCleanupWorkCollector recoveryCleanupWorkCollector = RecoveryCleanupWorkCollector.IMMEDIATE;
+        RecoveryCleanupWorkCollector recoveryCleanupWorkCollector = RecoveryCleanupWorkCollector.immediate();
         return GenericNativeIndexProviderFactory.create( pageCache, graphDbDir, fs, monitor, config, mode, recoveryCleanupWorkCollector );
     }
 
     @Override
     public boolean supportsSpatial()
     {
-        // TODO true when it supports spatial
-        return false;
+        return true;
     }
 
     @Override
@@ -61,5 +62,17 @@ public class GenericIndexProviderCompatibilitySuiteTest extends IndexProviderCom
     public boolean supportsBooleanRangeQueries()
     {
         return true;
+    }
+
+    @Override
+    public void consistencyCheck( IndexAccessor accessor )
+    {
+        ((NativeIndexAccessor) accessor).consistencyCheck();
+    }
+
+    @Override
+    public void consistencyCheck( IndexPopulator populator )
+    {
+        ((ConsistencyCheckableIndexPopulator) populator).consistencyCheck();
     }
 }

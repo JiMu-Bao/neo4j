@@ -26,10 +26,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
-import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -37,10 +35,10 @@ import java.util.Map;
 import java.util.function.IntPredicate;
 import java.util.stream.Collectors;
 
-import org.neo4j.collection.PrimitiveLongResourceIterator;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.helpers.collection.Visitor;
 import org.neo4j.internal.kernel.api.InternalIndexState;
@@ -56,10 +54,8 @@ import org.neo4j.kernel.api.Statement;
 import org.neo4j.kernel.api.exceptions.index.IndexActivationFailedKernelException;
 import org.neo4j.kernel.api.exceptions.index.IndexEntryConflictException;
 import org.neo4j.kernel.api.exceptions.index.IndexPopulationFailedKernelException;
-import org.neo4j.kernel.api.impl.schema.LuceneIndexProviderFactory;
-import org.neo4j.kernel.api.impl.schema.NativeLuceneFusionIndexProviderFactory10;
-import org.neo4j.kernel.api.impl.schema.NativeLuceneFusionIndexProviderFactory20;
 import org.neo4j.kernel.api.index.IndexEntryUpdate;
+import org.neo4j.kernel.api.index.IndexProvider;
 import org.neo4j.kernel.api.labelscan.LabelScanStore;
 import org.neo4j.kernel.api.labelscan.NodeLabelUpdate;
 import org.neo4j.kernel.api.schema.SchemaDescriptorFactory;
@@ -70,22 +66,22 @@ import org.neo4j.kernel.impl.api.index.IndexProviderMap;
 import org.neo4j.kernel.impl.api.index.IndexProxy;
 import org.neo4j.kernel.impl.api.index.IndexingService;
 import org.neo4j.kernel.impl.api.index.IndexingServiceFactory;
-import org.neo4j.kernel.impl.api.index.MultipleIndexPopulator;
 import org.neo4j.kernel.impl.api.index.StoreScan;
 import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
 import org.neo4j.kernel.impl.locking.LockService;
 import org.neo4j.kernel.impl.storageengine.impl.recordstorage.RecordStorageEngine;
+import org.neo4j.kernel.impl.storageengine.impl.recordstorage.RecordStorageReader;
 import org.neo4j.kernel.impl.store.NeoStores;
-import org.neo4j.kernel.impl.store.NodeStore;
-import org.neo4j.kernel.impl.store.PropertyStore;
 import org.neo4j.kernel.impl.store.SchemaStorage;
 import org.neo4j.kernel.impl.transaction.state.DirectIndexUpdates;
 import org.neo4j.kernel.impl.transaction.state.storeview.DynamicIndexStoreView;
+import org.neo4j.kernel.impl.transaction.state.storeview.EntityIdIterator;
 import org.neo4j.kernel.impl.transaction.state.storeview.LabelScanViewNodeStoreScan;
 import org.neo4j.kernel.impl.transaction.state.storeview.NeoStoreIndexStoreView;
 import org.neo4j.logging.NullLogProvider;
 import org.neo4j.scheduler.JobScheduler;
 import org.neo4j.storageengine.api.EntityType;
+import org.neo4j.storageengine.api.StorageReader;
 import org.neo4j.storageengine.api.schema.IndexDescriptorFactory;
 import org.neo4j.storageengine.api.schema.IndexReader;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
@@ -93,7 +89,6 @@ import org.neo4j.test.rule.EmbeddedDatabaseRule;
 import org.neo4j.values.storable.Values;
 
 import static java.lang.String.format;
-import static java.util.Arrays.asList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.fail;
@@ -118,15 +113,13 @@ public class MultiIndexPopulationConcurrentUpdatesIT
     private StoreIndexDescriptor[] rules;
 
     @Parameterized.Parameters( name = "{0}" )
-    public static Collection<IndexProviderDescriptor> parameters()
+    public static GraphDatabaseSettings.SchemaIndex[] parameters()
     {
-        return asList( LuceneIndexProviderFactory.PROVIDER_DESCRIPTOR,
-                NativeLuceneFusionIndexProviderFactory10.DESCRIPTOR,
-                NativeLuceneFusionIndexProviderFactory20.DESCRIPTOR );
+        return GraphDatabaseSettings.SchemaIndex.values();
     }
 
     @Parameterized.Parameter
-    public IndexProviderDescriptor indexDescriptor;
+    public GraphDatabaseSettings.SchemaIndex schemaIndex;
 
     private IndexingService indexService;
     private int propertyId;
@@ -180,13 +173,13 @@ public class MultiIndexPopulationConcurrentUpdatesIT
             try ( IndexReader indexReader = getIndexReader( propertyId, countryLabelId ) )
             {
                 assertEquals("Should be removed by concurrent remove.",
-                        0, indexReader.countIndexedNodes( 0, Values.of( "Sweden"  )) );
+                        0, indexReader.countIndexedNodes( 0, new int[] {propertyId}, Values.of( "Sweden"  )) );
             }
 
             try ( IndexReader indexReader = getIndexReader( propertyId, colorLabelId ) )
             {
                 assertEquals("Should be removed by concurrent remove.",
-                        0, indexReader.countIndexedNodes( 3, Values.of( "green"  )) );
+                        0, indexReader.countIndexedNodes( 3, new int[] {propertyId}, Values.of( "green"  )) );
             }
         }
     }
@@ -210,13 +203,13 @@ public class MultiIndexPopulationConcurrentUpdatesIT
             try ( IndexReader indexReader = getIndexReader( propertyId, countryLabelId ) )
             {
                 assertEquals("Should be added by concurrent add.", 1,
-                        indexReader.countIndexedNodes( otherNodes[0].getId(), Values.of( "Denmark" ) ) );
+                        indexReader.countIndexedNodes( otherNodes[0].getId(), new int[] {propertyId}, Values.of( "Denmark" ) ) );
             }
 
             try ( IndexReader indexReader = getIndexReader( propertyId, carLabelId ) )
             {
                 assertEquals("Should be added by concurrent add.", 1,
-                        indexReader.countIndexedNodes( otherNodes[1].getId(), Values.of( "BMW" ) ) );
+                        indexReader.countIndexedNodes( otherNodes[1].getId(), new int[] {propertyId}, Values.of( "BMW" ) ) );
             }
         }
     }
@@ -240,18 +233,18 @@ public class MultiIndexPopulationConcurrentUpdatesIT
             try ( IndexReader indexReader = getIndexReader( propertyId, colorLabelId ) )
             {
                 assertEquals( format( "Should be deleted by concurrent change. Reader is: %s, ", indexReader ), 0,
-                        indexReader.countIndexedNodes( color2.getId(), Values.of( "green" ) ) );
+                        indexReader.countIndexedNodes( color2.getId(), new int[] {propertyId}, Values.of( "green" ) ) );
             }
             try ( IndexReader indexReader = getIndexReader( propertyId, colorLabelId ) )
             {
                 assertEquals("Should be updated by concurrent change.", 1,
-                        indexReader.countIndexedNodes( color2.getId(), Values.of( "pink"  ) ) );
+                        indexReader.countIndexedNodes( color2.getId(), new int[] {propertyId}, Values.of( "pink"  ) ) );
             }
 
             try ( IndexReader indexReader = getIndexReader( propertyId, carLabelId ) )
             {
                 assertEquals("Should be added by concurrent change.", 1,
-                        indexReader.countIndexedNodes( car2.getId(), Values.of( "SAAB"  ) ) );
+                        indexReader.countIndexedNodes( car2.getId(), new int[] {propertyId}, Values.of( "SAAB"  ) ) );
             }
         }
     }
@@ -320,9 +313,10 @@ public class MultiIndexPopulationConcurrentUpdatesIT
             JobScheduler scheduler = getJobScheduler();
             TokenNameLookup tokenNameLookup = new SilentTokenNameLookup( ktx.tokenRead() );
 
+            NullLogProvider nullLogProvider = NullLogProvider.getInstance();
             indexService = IndexingServiceFactory.createIndexingService( Config.defaults(), scheduler,
                     providerMap, storeView, tokenNameLookup, getIndexRules( neoStores ),
-                    NullLogProvider.getInstance(), IndexingService.NO_MONITOR, getSchemaState() );
+                    nullLogProvider, nullLogProvider, IndexingService.NO_MONITOR, getSchemaState() );
             indexService.start();
 
             rules = createIndexRules( labelNameIdMap, propertyId );
@@ -384,8 +378,10 @@ public class MultiIndexPopulationConcurrentUpdatesIT
 
     private StoreIndexDescriptor[] createIndexRules( Map<String,Integer> labelNameIdMap, int propertyId )
     {
+        IndexProvider lookup = getIndexProviderMap().lookup( schemaIndex.providerName() );
+        IndexProviderDescriptor providerDescriptor = lookup.getProviderDescriptor();
         return labelNameIdMap.values().stream()
-                .map( index -> IndexDescriptorFactory.forSchema( SchemaDescriptorFactory.forLabel( index, propertyId ), indexDescriptor ).withId( index ) )
+                .map( index -> IndexDescriptorFactory.forSchema( SchemaDescriptorFactory.forLabel( index, propertyId ), providerDescriptor ).withId( index ) )
                 .toArray( StoreIndexDescriptor[]::new );
     }
 
@@ -489,12 +485,14 @@ public class MultiIndexPopulationConcurrentUpdatesIT
     private class DynamicIndexStoreViewWrapper extends DynamicIndexStoreView
     {
         private final Runnable customAction;
+        private final NeoStores neoStores;
 
         DynamicIndexStoreViewWrapper( NeoStoreIndexStoreView neoStoreIndexStoreView, LabelScanStore labelScanStore, LockService locks,
                 NeoStores neoStores, Runnable customAction )
         {
             super( neoStoreIndexStoreView, labelScanStore, locks, neoStores, NullLogProvider.getInstance() );
             this.customAction = customAction;
+            this.neoStores = neoStores;
         }
 
         @Override
@@ -506,7 +504,7 @@ public class MultiIndexPopulationConcurrentUpdatesIT
         {
             StoreScan<FAILURE> storeScan = super.visitNodes( labelIds, propertyKeyIdFilter, propertyUpdatesVisitor,
                     labelUpdateVisitor, forceStoreScan );
-            return new LabelScanViewNodeStoreWrapper<>( nodeStore, locks, propertyStore, getLabelScanStore(),
+            return new LabelScanViewNodeStoreWrapper<>( new RecordStorageReader( neoStores ), locks, getLabelScanStore(),
                     element -> false, propertyUpdatesVisitor, labelIds, propertyKeyIdFilter,
                     (LabelScanViewNodeStoreScan<FAILURE>) storeScan, customAction );
         }
@@ -517,41 +515,33 @@ public class MultiIndexPopulationConcurrentUpdatesIT
         private final LabelScanViewNodeStoreScan<FAILURE> delegate;
         private final Runnable customAction;
 
-        LabelScanViewNodeStoreWrapper( NodeStore nodeStore, LockService locks,
-                PropertyStore propertyStore,
+        LabelScanViewNodeStoreWrapper( StorageReader storageReader, LockService locks,
                 LabelScanStore labelScanStore, Visitor<NodeLabelUpdate,FAILURE> labelUpdateVisitor,
                 Visitor<EntityUpdates,FAILURE> propertyUpdatesVisitor, int[] labelIds, IntPredicate propertyKeyIdFilter,
                 LabelScanViewNodeStoreScan<FAILURE> delegate,
                 Runnable customAction )
         {
-            super( nodeStore, locks, propertyStore, labelScanStore, labelUpdateVisitor,
+            super( storageReader, locks, labelScanStore, labelUpdateVisitor,
                     propertyUpdatesVisitor, labelIds, propertyKeyIdFilter );
             this.delegate = delegate;
             this.customAction = customAction;
         }
 
         @Override
-        public void acceptUpdate( MultipleIndexPopulator.MultipleIndexUpdater updater, IndexEntryUpdate<?> update,
-                long currentlyIndexedNodeId )
+        public EntityIdIterator getEntityIdIterator()
         {
-            delegate.acceptUpdate( updater, update, currentlyIndexedNodeId );
-        }
-
-        @Override
-        public PrimitiveLongResourceIterator getEntityIdIterator()
-        {
-            PrimitiveLongResourceIterator originalIterator = delegate.getEntityIdIterator();
-            return new DelegatingPrimitiveLongResourceIterator( originalIterator, customAction );
+            EntityIdIterator originalIterator = delegate.getEntityIdIterator();
+            return new DelegatingEntityIdIterator( originalIterator, customAction );
         }
     }
 
-    private class DelegatingPrimitiveLongResourceIterator implements PrimitiveLongResourceIterator
+    private class DelegatingEntityIdIterator implements EntityIdIterator
     {
         private final Runnable customAction;
-        private final PrimitiveLongResourceIterator delegate;
+        private final EntityIdIterator delegate;
 
-        DelegatingPrimitiveLongResourceIterator(
-                PrimitiveLongResourceIterator delegate,
+        DelegatingEntityIdIterator(
+                EntityIdIterator delegate,
                 Runnable customAction )
         {
             this.delegate = delegate;
@@ -579,6 +569,12 @@ public class MultiIndexPopulationConcurrentUpdatesIT
         public void close()
         {
             delegate.close();
+        }
+
+        @Override
+        public void invalidateCache()
+        {
+            delegate.invalidateCache();
         }
     }
 

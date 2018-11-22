@@ -42,13 +42,12 @@ import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.graphdb.DependencyResolver;
 import org.neo4j.graphdb.config.Setting;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
-import org.neo4j.kernel.AvailabilityGuard;
 import org.neo4j.kernel.api.security.AuthManager;
 import org.neo4j.kernel.api.security.UserManagerSupplier;
 import org.neo4j.kernel.configuration.Config;
-import org.neo4j.kernel.impl.logging.NullLogService;
 import org.neo4j.kernel.impl.transaction.log.TransactionIdStore;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.logging.internal.NullLogService;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.udc.UsageData;
 
@@ -77,7 +76,6 @@ public class SessionRule implements TestRule
                 boltFactory = new BoltStateMachineFactoryImpl(
                                         databaseManager,
                                         new UsageData( null ),
-                                        resolver.resolveDependency( AvailabilityGuard.class ),
                                         authentication,
                                         Clock.systemUTC(),
                                         Config.defaults(),

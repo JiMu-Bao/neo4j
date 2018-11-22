@@ -31,17 +31,17 @@ import org.neo4j.graphdb.Path;
 import org.neo4j.graphdb.Relationship;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.graphdb.factory.module.DataSourceModule;
-import org.neo4j.graphdb.factory.module.EditionModule;
 import org.neo4j.graphdb.factory.module.PlatformModule;
+import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule;
 import org.neo4j.graphdb.security.URLAccessRule;
 import org.neo4j.graphdb.spatial.Geometry;
 import org.neo4j.graphdb.spatial.Point;
+import org.neo4j.helpers.collection.Pair;
 import org.neo4j.internal.kernel.api.exceptions.KernelException;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
-import org.neo4j.kernel.AvailabilityGuard;
-import org.neo4j.kernel.DatabaseAvailability;
-import org.neo4j.kernel.StartupWaiter;
 import org.neo4j.kernel.api.KernelTransaction;
+import org.neo4j.kernel.api.security.provider.SecurityProvider;
+import org.neo4j.kernel.availability.StartupWaiter;
 import org.neo4j.kernel.builtinprocs.SpecialBuiltInProcedures;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.extension.KernelExtensionFactory;
@@ -62,6 +62,8 @@ import org.neo4j.logging.Log;
 import org.neo4j.logging.LogProvider;
 import org.neo4j.logging.Logger;
 import org.neo4j.procedure.ProcedureTransaction;
+import org.neo4j.scheduler.DeferredExecutor;
+import org.neo4j.scheduler.Group;
 
 import static org.neo4j.internal.kernel.api.procs.Neo4jTypes.NTGeometry;
 import static org.neo4j.internal.kernel.api.procs.Neo4jTypes.NTNode;
@@ -75,13 +77,8 @@ import static org.neo4j.kernel.api.proc.Context.SECURITY_CONTEXT;
 
 /**
  * This is the main factory for creating database instances. It delegates creation to three different modules
- * ({@link PlatformModule}, {@link EditionModule}, and {@link DataSourceModule}),
+ * ({@link PlatformModule}, {@link AbstractEditionModule}, and {@link DataSourceModule}),
  * which create all the specific services needed to run a graph database.
- * <p>
- * It is abstract in order for subclasses to specify their own {@link EditionModule}
- * implementations. Subclasses also have to set the edition name in overridden version of
- * {@link #initFacade(File, Map, GraphDatabaseFacadeFactory.Dependencies, GraphDatabaseFacade)},
- * which is used for logging and similar.
  * <p>
  * To create test versions of databases, override an edition factory (e.g. {@link org.neo4j.kernel.impl.factory
  * .CommunityFacadeFactory}), and replace modules
@@ -107,13 +104,18 @@ public class GraphDatabaseFacadeFactory
         Map<String,URLAccessRule> urlAccessRules();
 
         Iterable<QueryEngineProvider> executionEngines();
+
+        /**
+         * Collection of command executors to start running once the db is started
+         */
+        Iterable<Pair<DeferredExecutor,Group>> deferredExecutors();
     }
 
     protected final DatabaseInfo databaseInfo;
-    private final Function<PlatformModule,EditionModule> editionFactory;
+    private final Function<PlatformModule,AbstractEditionModule> editionFactory;
 
     public GraphDatabaseFacadeFactory( DatabaseInfo databaseInfo,
-            Function<PlatformModule,EditionModule> editionFactory )
+            Function<PlatformModule,AbstractEditionModule> editionFactory )
     {
         this.databaseInfo = databaseInfo;
         this.editionFactory = editionFactory;
@@ -162,7 +164,9 @@ public class GraphDatabaseFacadeFactory
             final GraphDatabaseFacade graphDatabaseFacade )
     {
         PlatformModule platform = createPlatform( storeDir, config, dependencies );
-        EditionModule edition = editionFactory.apply( platform );
+        AbstractEditionModule edition = editionFactory.apply( platform );
+
+        platform.life.add( new VmPauseMonitorComponent( config, platform.logging.getInternalLog( VmPauseMonitorComponent.class ), platform.jobScheduler ) );
 
         Procedures procedures = setupProcedures( platform, edition, graphDatabaseFacade );
         platform.dependencies.satisfyDependency( new NonTransactionalDbmsOperations( procedures ) );
@@ -172,18 +176,19 @@ public class GraphDatabaseFacadeFactory
         platform.life.add( databaseManager );
         platform.dependencies.satisfyDependency( databaseManager );
 
-        edition.setupSecurityModule( platform, procedures );
+        edition.createSecurityModule( platform, procedures );
+        SecurityProvider securityProvider = edition.getSecurityProvider();
+        platform.dependencies.satisfyDependencies( securityProvider.authManager() );
+        platform.dependencies.satisfyDependencies( securityProvider.userManagerSupplier() );
 
         platform.life.add( platform.globalKernelExtensions );
         platform.life.add( createBoltServer( platform, edition, databaseManager ) );
-        platform.life.add( new VmPauseMonitorComponent( config, platform.logging.getInternalLog( VmPauseMonitorComponent.class ), platform.jobScheduler ) );
+        platform.dependencies.satisfyDependency( edition.globalTransactionCounter() );
         platform.life.add( new PublishPageCacheTracerMetricsAfterStart( platform.tracers.pageCursorTracerSupplier ) );
-        DatabaseAvailability databaseAvailability = new DatabaseAvailability( platform.availabilityGuard, platform.transactionMonitor,
-                config.get( GraphDatabaseSettings.shutdown_transaction_end_timeout ).toMillis() );
-        platform.dependencies.satisfyDependency( databaseAvailability );
-        platform.life.add( databaseAvailability );
-        platform.life.add( new StartupWaiter( platform.availabilityGuard, edition.transactionStartTimeout ) );
-        platform.dependencies.satisfyDependency( edition.schemaWriteGuard );
+        platform.life.add(
+                new StartupWaiter( edition.getGlobalAvailabilityGuard( platform.clock, platform.logging, platform.config ),
+                        edition.getTransactionStartTimeout() ) );
+        platform.dependencies.satisfyDependency( edition.getSchemaWriteGuard() );
         platform.life.setLast( platform.eventHandlers );
 
         edition.createDatabases( databaseManager, config );
@@ -195,16 +200,12 @@ public class GraphDatabaseFacadeFactory
         RuntimeException error = null;
         try
         {
-            // Done after create to avoid a redundant
-            // "database is now unavailable"
-            enableAvailabilityLogging( platform.availabilityGuard, msgLog );
-
             platform.life.start();
         }
         catch ( final Throwable throwable )
         {
             error = new RuntimeException( "Error starting " + getClass().getName() + ", " +
-                    platform.storeDir, throwable );
+                    platform.storeLayout.storeDirectory(), throwable );
         }
         finally
         {
@@ -238,25 +239,7 @@ public class GraphDatabaseFacadeFactory
         return new PlatformModule( storeDir, config, databaseInfo, dependencies );
     }
 
-    private void enableAvailabilityLogging( AvailabilityGuard availabilityGuard, final Logger msgLog )
-    {
-        availabilityGuard.addListener( new AvailabilityGuard.AvailabilityListener()
-        {
-            @Override
-            public void available()
-            {
-                msgLog.log( "Database is now ready" );
-            }
-
-            @Override
-            public void unavailable()
-            {
-                msgLog.log( "Database is now unavailable" );
-            }
-        } );
-    }
-
-    private static Procedures setupProcedures( PlatformModule platform, EditionModule editionModule, GraphDatabaseFacade facade )
+    private static Procedures setupProcedures( PlatformModule platform, AbstractEditionModule editionModule, GraphDatabaseFacade facade )
     {
         File pluginDir = platform.config.get( GraphDatabaseSettings.plugin_dir );
         Log internalLog = platform.logging.getInternalLog( Procedures.class );
@@ -308,10 +291,10 @@ public class GraphDatabaseFacadeFactory
         return procedures;
     }
 
-    private static BoltServer createBoltServer( PlatformModule platform, EditionModule edition, DatabaseManager databaseManager )
+    private static BoltServer createBoltServer( PlatformModule platform, AbstractEditionModule edition, DatabaseManager databaseManager )
     {
-        return new BoltServer( databaseManager, platform.fileSystem, platform.jobScheduler, platform.availabilityGuard,
-                platform.connectorPortRegister, edition.connectionTracker, platform.usageData, platform.config, platform.clock, platform.monitors,
+        return new BoltServer( databaseManager, platform.jobScheduler,
+                platform.connectorPortRegister, edition.getConnectionTracker(), platform.usageData, platform.config, platform.clock, platform.monitors,
                 platform.logging, platform.dependencies );
     }
 }

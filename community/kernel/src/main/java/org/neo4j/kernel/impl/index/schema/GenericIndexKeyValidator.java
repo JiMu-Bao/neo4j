@@ -23,14 +23,17 @@ import java.util.Arrays;
 
 import org.neo4j.index.internal.gbptree.GBPTree;
 import org.neo4j.index.internal.gbptree.Layout;
+import org.neo4j.kernel.impl.index.schema.config.IndexSpecificSpaceFillingCurveSettingsCache;
+import org.neo4j.kernel.impl.index.schema.config.SpaceFillingCurveSettingsWriter;
 import org.neo4j.kernel.impl.util.Validator;
 import org.neo4j.values.AnyValue;
 import org.neo4j.values.SequenceValue;
+import org.neo4j.values.storable.TextArray;
 import org.neo4j.values.storable.TextValue;
 import org.neo4j.values.storable.Value;
 
 import static java.lang.String.format;
-import static org.neo4j.kernel.impl.index.schema.GenericKeyState.BIGGEST_STATIC_SIZE;
+import static org.neo4j.kernel.impl.index.schema.GenericKey.BIGGEST_STATIC_SIZE;
 
 /**
  * Validates Value[] tuples, whether or not they fit inside a {@link GBPTree} with a layout using {@link CompositeGenericKey}.
@@ -39,12 +42,25 @@ import static org.neo4j.kernel.impl.index.schema.GenericKeyState.BIGGEST_STATIC_
 class GenericIndexKeyValidator implements Validator<Value[]>
 {
     private final int maxLength;
-    private final Layout<CompositeGenericKey,NativeIndexValue> layout;
+    private final Layout<GenericKey,NativeIndexValue> layout;
+    private final IndexSpecificSpaceFillingCurveSettingsCache spaceFillingCurveSettings;
+    private final int maxNumberOfCRSs;
 
-    GenericIndexKeyValidator( int maxLength, Layout<CompositeGenericKey,NativeIndexValue> layout )
+    GenericIndexKeyValidator( int maxLength, Layout<GenericKey,NativeIndexValue> layout,
+            IndexSpecificSpaceFillingCurveSettingsCache spaceFillingCurveSettings, int pageSize )
     {
         this.maxLength = maxLength;
         this.layout = layout;
+        this.spaceFillingCurveSettings = spaceFillingCurveSettings;
+
+        // Here's the thing: we want to prevent the number of coordinate reference systems in any given index to exceed
+        // max allowed such that all no longer fits in the GB+Tree header, because that would brick the index as well as the db.
+        // This limit is high, over a hundred, so practically this limit isn't hit in any "normal" use case.
+        // There's also no single point on the commit path, before tx is committed AND is single-threaded so that number of settings
+        // can be 100% verified. What we can do is to set this limit a bit below the actual limit and verify on that limit
+        // in this validator, which is called concurrently by multiple committers.
+        int actualMax = SpaceFillingCurveSettingsWriter.maxNumberOfSettings( pageSize );
+        this.maxNumberOfCRSs = actualMax - actualMax / 10;
     }
 
     @Override
@@ -60,6 +76,12 @@ class GenericIndexKeyValidator implements Validator<Value[]>
                         "Property value size:%d of %s is too large to index into this particular index. Please see index documentation for limitations.",
                         size, Arrays.toString( values ) ) );
             }
+        }
+
+        if ( spaceFillingCurveSettings.additionalValuesCouldExceed( values, maxNumberOfCRSs ) )
+        {
+            throw new UnsupportedOperationException(
+                    format( "Adding %s would exceed number of crs settings limit %d for this index", Arrays.toString( values ), maxNumberOfCRSs ) );
         }
     }
 
@@ -88,12 +110,17 @@ class GenericIndexKeyValidator implements Validator<Value[]>
         if ( value.isSequenceValue() )
         {
             SequenceValue sequenceValue = (SequenceValue) value;
-            int length = 0;
-            for ( int i = 0; i < sequenceValue.length(); i++ )
+            if ( sequenceValue instanceof TextArray )
             {
-                length += worstCaseLength( sequenceValue.value( i ) );
+                TextArray textArray = (TextArray) sequenceValue;
+                int length = 0;
+                for ( int i = 0; i < textArray.length(); i++ )
+                {
+                    length += stringWorstCaseLength( textArray.stringValue( i ).length() );
+                }
+                return length;
             }
-            return length;
+            return sequenceValue.length() * BIGGEST_STATIC_SIZE;
         }
         else
         {
@@ -101,7 +128,7 @@ class GenericIndexKeyValidator implements Validator<Value[]>
             {
             case TEXT:
                 // For text, which is very dynamic in its nature do a worst-case off of number of characters in it
-                return ((TextValue) value).length() * 4;
+                return stringWorstCaseLength( ((TextValue) value).length() );
             default:
                 // For all else then use the biggest possible value for a non-dynamic, non-array value a state can occupy
                 return BIGGEST_STATIC_SIZE;
@@ -109,9 +136,14 @@ class GenericIndexKeyValidator implements Validator<Value[]>
         }
     }
 
+    private static int stringWorstCaseLength( int stringLength )
+    {
+        return GenericKey.SIZE_STRING_LENGTH + stringLength * 4;
+    }
+
     private int actualLength( Value[] values )
     {
-        CompositeGenericKey key = layout.newKey();
+        GenericKey key = layout.newKey();
         key.initialize( 0 /*doesn't quite matter for size calculations, but an important method to call*/ );
         for ( int i = 0; i < values.length; i++ )
         {

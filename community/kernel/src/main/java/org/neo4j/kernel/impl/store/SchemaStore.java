@@ -49,7 +49,8 @@ public class SchemaStore extends AbstractDynamicStore implements Iterable<Schema
     public static final int BLOCK_SIZE = 56;
 
     public SchemaStore(
-            File fileName,
+            File file,
+            File idFile,
             Config conf,
             IdType idType,
             IdGeneratorFactory idGeneratorFactory,
@@ -58,7 +59,7 @@ public class SchemaStore extends AbstractDynamicStore implements Iterable<Schema
             RecordFormats recordFormats,
             OpenOption... openOptions )
     {
-        super( fileName, conf, idType, idGeneratorFactory, pageCache, logProvider, TYPE_DESCRIPTOR, BLOCK_SIZE,
+        super( file, idFile, conf, idType, idGeneratorFactory, pageCache, logProvider, TYPE_DESCRIPTOR, BLOCK_SIZE,
                 recordFormats.dynamic(), recordFormats.storeVersion(), openOptions );
     }
 

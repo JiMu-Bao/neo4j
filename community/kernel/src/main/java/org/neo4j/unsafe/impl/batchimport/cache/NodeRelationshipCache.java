@@ -29,7 +29,6 @@ import org.neo4j.unsafe.impl.batchimport.cache.idmapping.string.BigIdTracker;
 import static java.lang.Long.min;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
-
 import static org.neo4j.helpers.Numbers.safeCastIntToUnsignedShort;
 import static org.neo4j.helpers.Numbers.unsignedShortToInt;
 
@@ -239,11 +238,6 @@ public class NodeRelationshipCache implements MemoryStatsVisitor.Visitable, Auto
         this.highNodeId = nodeCount;
         this.array = arrayFactory.newByteArray( highNodeId, minusOneBytes( ID_AND_COUNT_SIZE ) );
         this.chunkChangedArray = new byte[chunkOf( nodeCount ) + 1];
-    }
-
-    public long getHighNodeId()
-    {
-        return this.highNodeId;
     }
 
     /**
@@ -769,6 +763,7 @@ public class NodeRelationshipCache implements MemoryStatsVisitor.Visitable, Auto
         return array.toString();
     }
 
+    @Override
     public void close()
     {
         if ( array != null )
