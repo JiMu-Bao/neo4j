@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002-2018 "Neo4j,"
+ * Copyright (c) 2002-2019 "Neo4j,"
  * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
@@ -166,15 +166,15 @@ public class SimpleIndexReader extends AbstractIndexReader
         case stringPrefix:
             assertNotComposite( predicates );
             IndexQuery.StringPrefixPredicate spp = (IndexQuery.StringPrefixPredicate) predicate;
-            return LuceneDocumentStructure.newRangeSeekByPrefixQuery( spp.prefix() );
+            return LuceneDocumentStructure.newRangeSeekByPrefixQuery( spp.prefix().stringValue() );
         case stringContains:
             assertNotComposite( predicates );
             IndexQuery.StringContainsPredicate scp = (IndexQuery.StringContainsPredicate) predicate;
-            return LuceneDocumentStructure.newWildCardStringQuery( scp.contains() );
+            return LuceneDocumentStructure.newWildCardStringQuery( scp.contains().stringValue() );
         case stringSuffix:
             assertNotComposite( predicates );
             IndexQuery.StringSuffixPredicate ssp = (IndexQuery.StringSuffixPredicate) predicate;
-            return LuceneDocumentStructure.newSuffixStringQuery( ssp.suffix() );
+            return LuceneDocumentStructure.newSuffixStringQuery( ssp.suffix().stringValue() );
         default:
             // todo figure out a more specific exception
             throw new RuntimeException( "Index query not supported: " + Arrays.toString( predicates ) );

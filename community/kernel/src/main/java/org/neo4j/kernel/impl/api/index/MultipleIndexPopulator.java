@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002-2018 "Neo4j,"
+ * Copyright (c) 2002-2019 "Neo4j,"
  * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
@@ -224,11 +224,7 @@ public class MultipleIndexPopulator implements IndexPopulator
             }
         }
 
-        // Index conflicts are expected (for unique indexes) so we don't need to log them.
-        if ( !(failure instanceof IndexEntryConflictException) )
-        {
-            log.error( format( "Failed to populate index: [%s]", population.indexUserDescription ), failure );
-        }
+        log.error( format( "Failed to populate index: [%s]", population.indexUserDescription ), failure );
 
         // The flipper will have already flipped to a failed index context here, but
         // it will not include the cause of failure, so we do another flip to a failed

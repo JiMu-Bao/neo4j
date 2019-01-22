@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002-2018 "Neo4j,"
+ * Copyright (c) 2002-2019 "Neo4j,"
  * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
@@ -31,6 +31,7 @@ import org.neo4j.commandline.admin.IncorrectUsage;
 import org.neo4j.commandline.admin.OutsideWorld;
 import org.neo4j.commandline.arguments.Arguments;
 import org.neo4j.commandline.arguments.OptionalNamedArg;
+import org.neo4j.graphdb.config.InvalidSettingException;
 import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.io.layout.DatabaseLayout;
 import org.neo4j.io.os.OsBeanUtil;
@@ -45,7 +46,6 @@ import static org.neo4j.configuration.ExternalSettings.maxHeapSize;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.active_database;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.database_path;
 import static org.neo4j.graphdb.factory.GraphDatabaseSettings.pagecache_memory;
-import static org.neo4j.graphdb.factory.GraphDatabaseSettings.tx_state_max_off_heap_memory;
 import static org.neo4j.io.ByteUnit.ONE_GIBI_BYTE;
 import static org.neo4j.io.ByteUnit.ONE_KIBI_BYTE;
 import static org.neo4j.io.ByteUnit.ONE_MEBI_BYTE;
@@ -96,19 +96,11 @@ public class MemoryRecommendationsCommand implements AdminCommand
         return brackets.recommend( Bracket::heapMemory );
     }
 
-    static long recommendTxStateMemory( long heapMemoryBytes )
-    {
-        long recommendation = heapMemoryBytes / 4;
-        recommendation = Math.max( mebiBytes( 128 ), recommendation );
-        recommendation = Math.min( gibiBytes( 8 ), recommendation );
-        return recommendation;
-    }
-
     static long recommendPageCacheMemory( long totalMemoryBytes )
     {
         long osMemory = recommendOsMemory( totalMemoryBytes );
         long heapMemory = recommendHeapMemory( totalMemoryBytes );
-        long recommendation = totalMemoryBytes - osMemory - heapMemory - recommendTxStateMemory( heapMemory );
+        long recommendation = totalMemoryBytes - osMemory - heapMemory;
         recommendation = Math.max( mebiBytes( 100 ), recommendation );
         recommendation = Math.min( tebiBytes( 16 ), recommendation );
         return recommendation;
@@ -204,7 +196,6 @@ public class MemoryRecommendationsCommand implements AdminCommand
         long memory = buildSetting( ARG_MEMORY, BYTES ).build().apply( arguments::get );
         String os = bytesToString( recommendOsMemory( memory ) );
         String heap = bytesToString( recommendHeapMemory( memory ) );
-        String txState = bytesToString( recommendTxStateMemory( memory ) );
         String pagecache = bytesToString( recommendPageCacheMemory( memory ) );
         boolean specificDb = arguments.has( ARG_DATABASE );
 
@@ -219,13 +210,6 @@ public class MemoryRecommendationsCommand implements AdminCommand
         print( "# data indexed, then it might advantageous to leave more memory for the" );
         print( "# operating system." );
         print( "#" );
-        print( "# Tip: Depending on the workload type you may want to increase the amount" );
-        print( "# of off-heap memory available for storing transaction state." );
-        print( "# For instance, in case of large write-intensive transactions" );
-        print( "# increasing it can lower GC overhead and thus improve performance." );
-        print( "# On the other hand, if vast majority of transactions are small or read-only" );
-        print( "# then you can decrease it and increase page cache instead." );
-        print( "#" );
         print( "# Tip: The more concurrent transactions your workload has and the more updates" );
         print( "# they do, the more heap memory you will need. However, don't allocate more" );
         print( "# than 31g of heap, since this will disable pointer compression, also known as" );
@@ -239,7 +223,6 @@ public class MemoryRecommendationsCommand implements AdminCommand
         print( initialHeapSize.name() + "=" + heap );
         print( maxHeapSize.name() + "=" + heap );
         print( pagecache_memory.name() + "=" + pagecache );
-        print( tx_state_max_off_heap_memory.name() + "=" + txState );
 
         if ( !specificDb )
         {
@@ -341,7 +324,14 @@ public class MemoryRecommendationsCommand implements AdminCommand
         {
             throw new CommandFailed( "Unable to find config file, tried: " + configFile.getAbsolutePath() );
         }
-        return Config.fromFile( configFile ).withHome( homeDir ).withSetting( active_database, databaseName ).withConnectorsDisabled().build();
+        try
+        {
+            return Config.fromFile( configFile ).withHome( homeDir ).withSetting( active_database, databaseName ).withConnectorsDisabled().build();
+        }
+        catch ( Exception e )
+        {
+            throw new CommandFailed( "Failed to read config file: " + configFile.getAbsolutePath(), e );
+        }
     }
 
     private void print( String text )

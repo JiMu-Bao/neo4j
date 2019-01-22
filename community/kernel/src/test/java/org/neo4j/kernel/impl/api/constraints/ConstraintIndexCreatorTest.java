@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002-2018 "Neo4j,"
+ * Copyright (c) 2002-2019 "Neo4j,"
  * Neo4j Sweden AB [http://neo4j.com]
  *
  * This file is part of Neo4j.
@@ -153,7 +153,7 @@ public class ConstraintIndexCreatorTest
         catch ( UniquePropertyValueValidationException e )
         {
             assertEquals( "Existing data does not satisfy CONSTRAINT ON ( label[123]:label[123] ) " +
-                          "ASSERT label[123].property[456] IS UNIQUE.", e.getMessage() );
+                    "ASSERT label[123].property[456] IS UNIQUE: Both node 2 and node 1 share the property value ( String(\"a\") )", e.getMessage() );
         }
         assertEquals( 2, kernel.transactions.size() );
         KernelTransactionImplementation tx1 = kernel.transactions.get( 0 );
@@ -398,6 +398,10 @@ public class ConstraintIndexCreatorTest
         catch ( InvalidTransactionTypeKernelException e )
         {
             fail( "Expected write transaction" );
+        }
+        catch ( SchemaKernelException e )
+        {
+            throw new RuntimeException( e );
         }
         return transaction;
     }
