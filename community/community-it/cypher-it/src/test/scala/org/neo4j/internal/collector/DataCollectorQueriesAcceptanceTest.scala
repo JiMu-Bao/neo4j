@@ -19,24 +19,21 @@
  */
 package org.neo4j.internal.collector
 
-import org.neo4j.cypher._
+import java.nio.file.Files
+
 import org.scalatest.matchers.{MatchResult, Matcher}
 
-class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
+import scala.collection.mutable.ArrayBuffer
+
+class DataCollectorQueriesAcceptanceTest extends DataCollectorTestSupport {
 
   import DataCollectorMatchers._
 
   test("should collect and retrieve queries") {
     // given
-    execute("RETURN 'not collected!'")
-    execute("CALL db.stats.collect('QUERIES')").single
-
     execute("MATCH (n) RETURN count(n)")
     execute("MATCH (n)-->(m) RETURN n,m")
     execute("WITH 'hi' AS x RETURN x+'-ho'")
-
-    execute("CALL db.stats.stop('QUERIES')").single
-    execute("RETURN 'not collected!'")
 
     // when
     val res = execute("CALL db.stats.retrieve('QUERIES')").toList
@@ -64,9 +61,33 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
     )
   }
 
+  test("should allow explicit control over query collection") {
+    // given
+    execute("CALL db.stats.stop('QUERIES')").single
+
+    execute("RETURN 'not collected!'")
+    execute("CALL db.stats.collect('QUERIES')").single
+    execute("MATCH (n) RETURN count(n)")
+    execute("CALL db.stats.stop('QUERIES')").single
+    execute("RETURN 'not collected!'")
+
+    // when
+    val res = execute("CALL db.stats.retrieve('QUERIES')").toList
+
+    // then
+    res should beListWithoutOrder(
+      beMapContaining(
+        "section" -> "QUERIES",
+        "data" -> beMapContaining(
+          "query" -> "MATCH (n) RETURN count(n)"
+        )
+      )
+    )
+  }
+
   test("should clear queries") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
+    assertCollecting("QUERIES")
     execute("MATCH (n) RETURN count(n)")
     execute("CALL db.stats.stop('QUERIES')").single
     execute("CALL db.stats.retrieve('QUERIES')").toList should have size 1
@@ -80,7 +101,7 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("should append queries if restarted collection") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
+    assertCollecting("QUERIES")
     execute("MATCH (n) RETURN count(n)")
     execute("CALL db.stats.stop('QUERIES')").single
     execute("CALL db.stats.retrieve('QUERIES')").toList should have size 1
@@ -95,15 +116,13 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("should stop collection after specified time") {
     // given
+    execute("CALL db.stats.stop('QUERIES')").single
     execute("CALL db.stats.collect('QUERIES', {durationSeconds: 3})").single
     execute("MATCH (n) RETURN count(n)")
     Thread.sleep(4000)
 
     // then
-    execute("CALL db.stats.status()").single should beMapContaining(
-      "status" -> "idle",
-      "section" -> "QUERIES"
-    )
+    assertIdle("QUERIES")
 
     // and when
     execute("RETURN 'late query'")
@@ -114,6 +133,7 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("should not stop later collection event after initial timeout") {
     // given
+    execute("CALL db.stats.stop('QUERIES')").single
     execute("CALL db.stats.collect('QUERIES', {durationSeconds: 3})").single
     execute("MATCH (n) RETURN count(n)")
     execute("CALL db.stats.stop('QUERIES')").single
@@ -121,14 +141,12 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
     Thread.sleep(4000)
 
     // then
-    execute("CALL db.stats.status()").single should beMapContaining(
-      "status" -> "collecting",
-      "section" -> "QUERIES"
-    )
+    assertCollecting("QUERIES")
   }
 
   test("should retrieve query execution plan and estimated rows") {
     // given
+    execute("CALL db.stats.stop('QUERIES')").single
     execute("CREATE (a), (b), (c)")
 
     execute("CALL db.stats.collect('QUERIES')").single
@@ -180,13 +198,11 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("should retrieve invocations of query") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> "BrassLeg"))
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> 2))
     execute("WITH 42 AS x RETURN x")
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> List(3.1, 3.2)))
     execute("WITH 42 AS x RETURN x")
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieve('QUERIES')").toList
@@ -197,22 +213,10 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
         "section" -> "QUERIES",
         "data" -> beMapContaining(
           "query" -> "MATCH (n {p: $param}) RETURN count(n)",
-          "invocations" -> beListInOrder(
-            beMapContaining(
-              "params" -> Map("param" -> "BrassLeg"),
-              "elapsedExecutionTimeInUs" -> ofType[Long],
-              "elapsedCompileTimeInUs" -> ofType[Long]
-            ),
-            beMapContaining(
-              "params" -> Map("param" -> 2),
-              "elapsedExecutionTimeInUs" -> ofType[Long],
-              "elapsedCompileTimeInUs" -> ofType[Long]
-            ),
-            beMapContaining(
-              "params" -> Map("param" -> List(3.1, 3.2)),
-              "elapsedExecutionTimeInUs" -> ofType[Long],
-              "elapsedCompileTimeInUs" -> ofType[Long]
-            )
+          "invocations" -> beInvocationsInOrder(
+            Map("param" -> "BrassLeg"),
+            Map("param" -> Long.box(2)),
+            Map("param" -> List(3.1, 3.2))
           )
         )
       ),
@@ -220,16 +224,7 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
         "section" -> "QUERIES",
         "data" -> beMapContaining(
           "query" -> "WITH 42 AS x RETURN x",
-          "invocations" -> beListInOrder(
-            beMapContaining(
-              "elapsedExecutionTimeInUs" -> ofType[Long],
-              "elapsedCompileTimeInUs" -> ofType[Long]
-            ),
-            beMapContaining(
-              "elapsedExecutionTimeInUs" -> ofType[Long],
-              "elapsedCompileTimeInUs" -> ofType[Long]
-            )
-          )
+          "invocations" -> beInvocationCount(2)
         )
       )
     )
@@ -237,13 +232,11 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("should retrieve invocation summary of query") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> "BrassLeg"))
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> 2))
     execute("WITH 42 AS x RETURN x")
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> List(3.1, 3.2)))
     execute("WITH 42 AS x RETURN x")
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieve('QUERIES')").toList
@@ -263,7 +256,6 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("should limit number of retrieved invocations of query") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> "BrassLeg"))
     execute("MATCH (n {p: $param}) RETURN count(n)", Map("param" -> 2))
     execute("WITH 42 AS x RETURN x")
@@ -271,7 +263,6 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
     execute("WITH 42 AS x RETURN x")
     execute("WITH 42 AS x RETURN x")
     execute("WITH 42 AS x RETURN x")
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieve('QUERIES', {maxInvocations: 2})").toList
@@ -282,13 +273,9 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
         "section" -> "QUERIES",
         "data" -> beMapContaining(
           "query" -> "MATCH (n {p: $param}) RETURN count(n)",
-          "invocations" -> beListInOrder(
-            beMapContaining(
-              "params" -> Map("param" -> "BrassLeg")
-            ),
-            beMapContaining(
-              "params" -> Map("param" -> 2)
-            )
+          "invocations" -> beInvocationsInOrder(
+            Map("param" -> "BrassLeg"),
+            Map("param" -> 2)
           )
         )
       ),
@@ -296,10 +283,7 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
         "section" -> "QUERIES",
         "data" -> beMapContaining(
           "query" -> "WITH 42 AS x RETURN x",
-          "invocations" -> beListInOrder(
-            beMapContaining(),
-            beMapContaining()
-          )
+          "invocations" -> beInvocationCount(2)
         )
       )
     )
@@ -315,10 +299,9 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
   test("[retrieveAllAnonymized] should anonymize tokens inside queries") {
     // given
     execute("CREATE (:User {age: 99})-[:KNOWS]->(:Buddy {p: 42})-[:WANTS]->(:Raccoon)") // create tokens
-    execute("CALL db.stats.collect('QUERIES')").single
+
     execute("MATCH (:User)-[:KNOWS]->(:Buddy)-[:WANTS]->(:Raccoon) RETURN 1")
     execute("MATCH ({p: 42}), ({age: 43}) RETURN 1")
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieveAllAnonymized('myToken')")
@@ -330,12 +313,46 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
     )
   }
 
+  test("[retrieveAllAnonymized] should handle pre-parser options") {
+    // given
+    execute("CREATE (:User {age: 99})-[:KNOWS]->(:Buddy {p: 42})-[:WANTS]->(:Raccoon)") // create tokens
+
+    execute("EXPLAIN MATCH (:User)-[:KNOWS]->(:Buddy)-[:WANTS]->(:Raccoon) RETURN 1")
+    execute("CYPHER 3.4 runtime=interpreted PROFILE CREATE ()")
+
+    // when
+    val res = execute("CALL db.stats.retrieveAllAnonymized('myToken')")
+
+    // then
+    res.toList should beListWithoutOrder(
+      querySection("EXPLAIN MATCH (:L0)-[:R0]->(:L1)-[:R1]->(:L2) RETURN 1"),
+      querySection("CYPHER 3.4 runtime=interpreted PROFILE CREATE ()")
+    )
+  }
+
+  test("[retrieveAllAnonymized] should handle load csv") {
+    // given
+    val path = Files.createTempFile("data", ".csv")
+    val url = path.toUri.toURL.toString
+
+    execute(s"LOAD CSV FROM '$url' AS row CREATE ({key: row[0]})")
+    execute(s"USING PERIODIC COMMIT 30 LOAD CSV FROM '$url' AS row CREATE ({key: row[0]})")
+
+    // when
+    val res = execute("CALL db.stats.retrieveAllAnonymized('myToken')")
+
+    // then
+    val urlLength = url.length
+    res.toList should beListWithoutOrder(
+      querySection(s"LOAD CSV FROM 'string[$urlLength]' AS var0 CREATE ({UNKNOWN0: var0[0]})"),
+      querySection(s"USING PERIODIC COMMIT 30 LOAD CSV FROM 'string[$urlLength]' AS var0 CREATE ({UNKNOWN0: var0[0]})")
+    )
+  }
+
   test("[retrieveAllAnonymized] should anonymize unknown tokens inside queries") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
     execute("MATCH (:User)-[:KNOWS]->(:Buddy)-[:WANTS]->(:Raccoon) RETURN 1")
     execute("MATCH ({p: 42}), ({age: 43}) RETURN 1")
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieveAllAnonymized('myToken')")
@@ -349,9 +366,7 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("[retrieveAllAnonymized] should anonymize string literals inside queries") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
     execute("RETURN 'Scrooge' AS uncle, 'Donald' AS name")
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieveAllAnonymized('myToken')")
@@ -364,11 +379,9 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("[retrieveAllAnonymized] should anonymize variables and return names") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
     execute("RETURN 42 AS x")
     execute("WITH 42 AS x RETURN x")
     execute("WITH 1 AS k RETURN k + k")
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieveAllAnonymized('myToken')")
@@ -383,12 +396,10 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
 
   test("[retrieveAllAnonymized] should anonymize parameters") {
     // given
-    execute("CALL db.stats.collect('QUERIES')").single
     execute("RETURN 42 = $user, $name", Map("user" -> "BrassLeg", "name" -> "George"))
     execute("RETURN 42 = $user, $name", Map("user" -> 2, "name" -> "Glinda"))
     execute("RETURN 42 = $user, $name", Map("user" -> List(3.1, 3.2), "name" -> "Kim"))
     execute("RETURN $user, $name, $user + $name", Map("user" -> List(3.1, 3.2), "name" -> "Kim"))
-    execute("CALL db.stats.stop('QUERIES')").single
 
     // when
     val res = execute("CALL db.stats.retrieveAllAnonymized('myToken')")
@@ -399,18 +410,10 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
         "section" -> "QUERIES",
         "data" -> beMapContaining(
           "query" -> "RETURN 42 = $param0, $param1",
-          "invocations" -> beListInOrder(
-            beMapContaining(
-              "params" -> "4ac156c0", // Map("user" -> "BrassLeg", "name" -> "George")
-              "elapsedExecutionTimeInUs" -> ofType[Long],
-              "elapsedCompileTimeInUs" -> ofType[Long]
-            ),
-            beMapContaining(
-              "params" -> "b439d06c" // Map("user" -> 2, "name" -> "Glinda")
-            ),
-            beMapContaining(
-              "params" -> "e5adc9ad" // Map("user" -> List(3.1, 3.2), "name" -> "Kim")
-            )
+          "invocations" -> beInvocationsInOrder(
+            "4ac156c0", // Map("user" -> "BrassLeg", "name" -> "George")
+            "b439d06c", // Map("user" -> 2, "name" -> "Glinda")
+            "e5adc9ad"  // Map("user" -> List(3.1, 3.2), "name" -> "Kim")
           )
         )
       ),
@@ -418,10 +421,8 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
         "section" -> "QUERIES",
         "data" -> beMapContaining(
           "query" -> "RETURN $param0, $param1, $param0 + $param1",
-          "invocations" -> beListInOrder(
-            beMapContaining(
-              "params" -> "e5adc9ad" // Map("user" -> List(3.1, 3.2), "name" -> "Kim")
-            )
+          "invocations" -> beInvocationsInOrder(
+            "e5adc9ad" // Map("user" -> List(3.1, 3.2), "name" -> "Kim")
           )
         )
       )
@@ -435,11 +436,6 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
         "query" -> beCypher(queryText)
       )
     )
-
-  private def assertInvalidArgument(query: String): Unit = {
-    val e = intercept[CypherExecutionException](execute(query))
-    e.status should be(org.neo4j.kernel.api.exceptions.Status.General.InvalidArguments)
-  }
 
   case class QueryWithInvocationSummary(expectedQuery: String) extends Matcher[AnyRef] {
     override def apply(left: AnyRef): MatchResult = {
@@ -475,5 +471,60 @@ class DataCollectorQueriesAcceptanceTest extends ExecutionEngineFunSuite {
           MatchResult(matches = false, s"Expected map, got $left", "")
       }
     }
+  }
+
+  def beInvocationCount(count: Int) = InvocationsMatcher((0 until count).map(_ => null))
+
+  def beInvocationsInOrder(expectedParams: AnyRef*) = InvocationsMatcher(expectedParams)
+
+  case class InvocationsMatcher(expectedParams: Seq[AnyRef]) extends Matcher[AnyRef] {
+
+    override def apply(left: AnyRef): MatchResult = {
+      val errors = new ArrayBuffer[String]
+      left match {
+        case values: Seq[AnyRef] =>
+
+          var previousInvocationTime = 0L
+
+          for (i <- expectedParams.indices) {
+            val expectedParam = expectedParams(i)
+
+            if (i < values.size) {
+              values(i) match {
+                case map: Map[String, AnyRef] =>
+                  if (expectedParam != null) {
+                    val params = map.getOrElse("params", null)
+                    if (params != expectedParam)
+                      errors += s"Expected invocation with params '$expectedParam' at position $i, but has params '$params'"
+                  }
+
+                  map("elapsedExecutionTimeInUs").asInstanceOf[Long] should be > 0L
+                  map("elapsedCompileTimeInUs").asInstanceOf[Long] should be > 0L
+                  map("startTimestampMillis").asInstanceOf[Long] should be > 0L
+                  val invocationTime = map("startTimestampMillis").asInstanceOf[Long]
+                  if (invocationTime < previousInvocationTime)
+                    errors += s"Expected invocations to be ordered by start timestamp, but got invocation with timestamp $invocationTime ordered after invocation with timestamp $previousInvocationTime"
+                  previousInvocationTime = invocationTime
+
+                case x => errors += s"Expected all invocations to be maps, but got $x"
+              }
+
+            } else
+              errors += s"Expected invocation with param '$expectedParam' at position $i, but list was too small"
+          }
+          if (values.size > expectedParams.size)
+            errors += s"Expected ${expectedParams.size} invocations, but got additional invocations ${values.slice(expectedParams.size, values.size)}"
+
+        case x =>
+          errors += s"Expected invocation list but got '$x'"
+      }
+      MatchResult(
+        matches = errors.isEmpty,
+        rawFailureMessage = "Encountered a bunch of errors: " + errors.map("  "+_).mkString("\n", "\n", "\n"),
+        rawNegatedFailureMessage = "BAH"
+      )
+    }
+
+    override def toString(): String = s"invocations with params (${expectedParams.mkString(", ")})"
   }
 }

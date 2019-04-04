@@ -45,11 +45,11 @@ import org.neo4j.kernel.api.exceptions.index.IndexPopulationFailedKernelExceptio
 import org.neo4j.kernel.api.index.IndexEntryUpdate;
 import org.neo4j.kernel.api.index.IndexPopulator;
 import org.neo4j.kernel.api.index.IndexUpdater;
-import org.neo4j.kernel.api.index.NodePropertyAccessor;
 import org.neo4j.kernel.impl.api.SchemaState;
 import org.neo4j.logging.Log;
 import org.neo4j.logging.LogProvider;
 import org.neo4j.storageengine.api.EntityType;
+import org.neo4j.storageengine.api.NodePropertyAccessor;
 import org.neo4j.storageengine.api.schema.CapableIndexDescriptor;
 import org.neo4j.storageengine.api.schema.IndexSample;
 import org.neo4j.storageengine.api.schema.PopulationProgress;
@@ -89,8 +89,8 @@ public class MultipleIndexPopulator implements IndexPopulator
     public static final String QUEUE_THRESHOLD_NAME = "queue_threshold";
     static final String BATCH_SIZE_NAME = "batch_size";
 
-    private final int QUEUE_THRESHOLD = FeatureToggles.getInteger( getClass(), QUEUE_THRESHOLD_NAME, 20_000 );
-    private final int BATCH_SIZE = FeatureToggles.getInteger( BatchingMultipleIndexPopulator.class, BATCH_SIZE_NAME, 10_000 );
+    final int QUEUE_THRESHOLD = FeatureToggles.getInteger( getClass(), QUEUE_THRESHOLD_NAME, 20_000 );
+    final int BATCH_SIZE = FeatureToggles.getInteger( BatchingMultipleIndexPopulator.class, BATCH_SIZE_NAME, 10_000 );
 
     // Concurrency queue since multiple concurrent threads may enqueue updates into it. It is important for this queue
     // to have fast #size() method since it might be drained in batches
@@ -106,6 +106,7 @@ public class MultipleIndexPopulator implements IndexPopulator
     protected final Log log;
     private final EntityType type;
     private final SchemaState schemaState;
+    private final PhaseTracker phaseTracker;
     private StoreScan<IndexPopulationFailedKernelException> storeScan;
 
     public MultipleIndexPopulator( IndexStoreView storeView, LogProvider logProvider, EntityType type, SchemaState schemaState )
@@ -115,6 +116,7 @@ public class MultipleIndexPopulator implements IndexPopulator
         this.log = logProvider.getLog( IndexPopulationJob.class );
         this.type = type;
         this.schemaState = schemaState;
+        this.phaseTracker = new LoggingPhaseTracker( logProvider.getLog( IndexPopulationJob.class ) );
     }
 
     IndexPopulation addPopulator( IndexPopulator populator, CapableIndexDescriptor capableIndexDescriptor, FlippableIndexProxy flipper,
@@ -172,6 +174,7 @@ public class MultipleIndexPopulator implements IndexPopulator
         {
             storeScan = storeView.visitNodes( entityTokenIds, propertyKeyIdFilter, new EntityPopulationVisitor(), null, false );
         }
+        storeScan.setPhaseTracker( phaseTracker );
         return new DelegatingStoreScan<IndexPopulationFailedKernelException>( storeScan )
         {
             @Override
@@ -268,6 +271,7 @@ public class MultipleIndexPopulator implements IndexPopulator
     @Override
     public void close( boolean populationCompletedSuccessfully )
     {
+        phaseTracker.stop();
         // closing the populators happens in flip, fail or individually when they are completed
     }
 
@@ -289,6 +293,12 @@ public class MultipleIndexPopulator implements IndexPopulator
         throw new UnsupportedOperationException( "Multiple index populator can't perform index sampling." );
     }
 
+    @Override
+    public void scanCompleted( PhaseTracker phaseTracker )
+    {
+        throw new UnsupportedOperationException( "Not supposed to be called" );
+    }
+
     void resetIndexCounts()
     {
         forEachPopulation( this::resetIndexCountsForPopulation );
@@ -305,6 +315,7 @@ public class MultipleIndexPopulator implements IndexPopulator
         {
             try
             {
+                population.scanCompleted();
                 population.flip( verifyBeforeFlipping );
             }
             catch ( Throwable t )
@@ -339,6 +350,11 @@ public class MultipleIndexPopulator implements IndexPopulator
         indexPopulation.cancel();
     }
 
+    void dropIndexPopulation( IndexPopulation indexPopulation )
+    {
+        indexPopulation.cancelAndDrop();
+    }
+
     private boolean removeFromOngoingPopulations( IndexPopulation indexPopulation )
     {
         return populations.remove( indexPopulation );
@@ -355,6 +371,12 @@ public class MultipleIndexPopulator implements IndexPopulator
     }
 
     protected void flush( IndexPopulation population )
+    {
+        phaseTracker.enterPhase( PhaseTracker.Phase.WRITE );
+        doFlush( population );
+    }
+
+    void doFlush( IndexPopulation population )
     {
         try
         {
@@ -525,14 +547,30 @@ public class MultipleIndexPopulator implements IndexPopulator
 
         void cancel()
         {
+            cancel( () -> populator.close( false ) );
+        }
+
+        void cancelAndDrop()
+        {
+            cancel( populator::drop );
+        }
+
+        /**
+         * Cancels population also executing a specific operation on the populator
+         * @param specificPopulatorOperation specific operation in addition to closing the populator.
+         */
+        private void cancel( Runnable specificPopulatorOperation )
+        {
             populatorLock.lock();
             try
             {
                 if ( populationOngoing )
                 {
-                    populator.close( false );
-                    resetIndexCountsForPopulation( this );
+                    // First of all remove this population from the list of ongoing populations so that it won't receive more updates.
+                    // This is good because closing the populator may wait for an opportunity to perform the close, among the incoming writes to it.
                     removeFromOngoingPopulations( this );
+                    specificPopulatorOperation.run();
+                    resetIndexCountsForPopulation( this );
                     populationOngoing = false;
                 }
             }
@@ -553,6 +591,7 @@ public class MultipleIndexPopulator implements IndexPopulator
 
         void flip( boolean verifyBeforeFlipping ) throws FlipFailedKernelException
         {
+            phaseTracker.enterPhase( PhaseTracker.Phase.FLIP );
             flipper.flip( () ->
             {
                 populatorLock.lock();
@@ -623,6 +662,16 @@ public class MultipleIndexPopulator implements IndexPopulator
             batchedUpdates = new ArrayList<>( BATCH_SIZE );
             return batch;
         }
+
+        void scanCompleted() throws IndexEntryConflictException
+        {
+            populator.scanCompleted( phaseTracker );
+        }
+
+        PopulationProgress progress( PopulationProgress storeScanProgress )
+        {
+            return populator.progress( storeScanProgress );
+        }
     }
 
     private class EntityPopulationVisitor implements Visitor<EntityUpdates,
@@ -677,6 +726,12 @@ public class MultipleIndexPopulator implements IndexPopulator
         public PopulationProgress getProgress()
         {
             return delegate.getProgress();
+        }
+
+        @Override
+        public void setPhaseTracker( PhaseTracker phaseTracker )
+        {
+            delegate.setPhaseTracker( phaseTracker );
         }
     }
 }
