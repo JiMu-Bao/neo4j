@@ -72,11 +72,11 @@ import org.neo4j.kernel.api.index.IndexEntryUpdate;
 import org.neo4j.kernel.api.index.IndexPopulator;
 import org.neo4j.kernel.api.index.IndexProvider;
 import org.neo4j.kernel.api.index.IndexUpdater;
-import org.neo4j.storageengine.api.NodePropertyAccessor;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.extension.KernelExtensionFactory;
 import org.neo4j.kernel.impl.api.index.IndexUpdateMode;
 import org.neo4j.kernel.impl.api.index.sampling.IndexSamplingConfig;
+import org.neo4j.kernel.impl.index.schema.ByteBufferFactory;
 import org.neo4j.kernel.impl.pagecache.ConfiguringPageCacheFactory;
 import org.neo4j.kernel.impl.spi.KernelContext;
 import org.neo4j.kernel.impl.store.NeoStores;
@@ -104,6 +104,7 @@ import org.neo4j.logging.AssertableLogProvider;
 import org.neo4j.logging.NullLog;
 import org.neo4j.logging.NullLogProvider;
 import org.neo4j.scheduler.ThreadPoolJobScheduler;
+import org.neo4j.storageengine.api.NodePropertyAccessor;
 import org.neo4j.storageengine.api.StorageEngine;
 import org.neo4j.storageengine.api.schema.IndexReader;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
@@ -194,8 +195,8 @@ public class RecoveryIT
         {
             assertEquals( 10, count( recoveredDatabase.getAllNodes() ) );
         }
-        logProvider.assertContainsMessageContaining( "10% completed" );
-        logProvider.assertContainsMessageContaining( "100% completed" );
+        logProvider.rawMessageMatcher().assertContains( "10% completed" );
+        logProvider.rawMessageMatcher().assertContains( "100% completed" );
 
         database.shutdown();
         recoveredDatabase.shutdown();
@@ -852,9 +853,9 @@ public class RecoveryIT
         }
 
         @Override
-        public IndexPopulator getPopulator( StoreIndexDescriptor descriptor, IndexSamplingConfig samplingConfig )
+        public IndexPopulator getPopulator( StoreIndexDescriptor descriptor, IndexSamplingConfig samplingConfig, ByteBufferFactory bufferFactory )
         {
-            return actual.getPopulator( descriptor, samplingConfig );
+            return actual.getPopulator( descriptor, samplingConfig, bufferFactory );
         }
 
         @Override

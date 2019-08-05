@@ -19,7 +19,6 @@
  */
 package org.neo4j.kernel.impl.api.index;
 
-import org.eclipse.collections.api.map.primitive.LongObjectMap;
 import org.hamcrest.Description;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
@@ -81,7 +80,6 @@ import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory;
 import org.neo4j.kernel.impl.store.UnderlyingStorageException;
 import org.neo4j.kernel.impl.storemigration.StoreMigrationParticipant;
 import org.neo4j.kernel.impl.transaction.command.Command.NodeCommand;
-import org.neo4j.kernel.impl.transaction.command.Command.PropertyCommand;
 import org.neo4j.kernel.impl.transaction.command.Command.RelationshipCommand;
 import org.neo4j.kernel.impl.transaction.state.DefaultIndexProviderMap;
 import org.neo4j.kernel.impl.transaction.state.DirectIndexUpdates;
@@ -98,6 +96,7 @@ import org.neo4j.storageengine.api.schema.IndexDescriptor;
 import org.neo4j.storageengine.api.schema.IndexReader;
 import org.neo4j.storageengine.api.schema.IndexSample;
 import org.neo4j.storageengine.api.schema.PopulationProgress;
+import org.neo4j.storageengine.api.schema.SchemaRule;
 import org.neo4j.storageengine.api.schema.StoreIndexDescriptor;
 import org.neo4j.test.Barrier;
 import org.neo4j.test.DoubleLatch;
@@ -506,9 +505,10 @@ public class IndexingServiceTest
         indexingService.init();
 
         // then
-        onBothLogProviders( logProvider -> logProvider.assertNoMessagesContaining( "IndexingService.init: Deprecated index providers in use:" ) );
-        onBothLogProviders( logProvider -> internalLogProvider.assertNoMessagesContaining( nativeBtree10Descriptor.name() ) );
-        onBothLogProviders( logProvider -> internalLogProvider.assertNoMessagesContaining( fulltextDescriptor.name() ) );
+        onBothLogProviders(
+                logProvider -> logProvider.rawMessageMatcher().assertNotContains( "IndexingService.init: Deprecated index providers in use:" ) );
+        onBothLogProviders( logProvider -> internalLogProvider.rawMessageMatcher().assertNotContains( nativeBtree10Descriptor.name() ) );
+        onBothLogProviders( logProvider -> internalLogProvider.rawMessageMatcher().assertNotContains( fulltextDescriptor.name() ) );
     }
 
     @Test
@@ -545,9 +545,10 @@ public class IndexingServiceTest
         indexingService.start();
 
         // then
-        onBothLogProviders( logProvider -> internalLogProvider.assertNoMessagesContaining( "IndexingService.start: Deprecated index providers in use:" ) );
-        onBothLogProviders( logProvider -> internalLogProvider.assertNoMessagesContaining( nativeBtree10Descriptor.name() ) );
-        onBothLogProviders( logProvider -> internalLogProvider.assertNoMessagesContaining( fulltextDescriptor.name() ) );
+        AssertableLogProvider.MessageMatcher messageMatcher = internalLogProvider.rawMessageMatcher();
+        onBothLogProviders( logProvider -> messageMatcher.assertNotContains( "IndexingService.start: Deprecated index providers in use:" ) );
+        onBothLogProviders( logProvider -> messageMatcher.assertNotContains( nativeBtree10Descriptor.name() ) );
+        onBothLogProviders( logProvider -> messageMatcher.assertNotContains( fulltextDescriptor.name() ) );
     }
 
     @Test
@@ -591,7 +592,7 @@ public class IndexingServiceTest
         indexingService.start();
 
         // then
-        userLogProvider.assertContainsExactlyOneMessageMatching(
+        userLogProvider.rawMessageMatcher().assertContainsSingle(
                 Matchers.allOf(
                         Matchers.containsString( "Deprecated index providers in use:" ),
                         Matchers.containsString( lucene10Descriptor.name() + " (1 index)" ),
@@ -600,8 +601,8 @@ public class IndexingServiceTest
                         Matchers.containsString( "Use procedure 'db.indexes()' to see what indexes use which index provider." )
                 )
         );
-        onBothLogProviders( logProvider -> internalLogProvider.assertNoMessagesContaining( nativeBtree10Descriptor.name() ) );
-        onBothLogProviders( logProvider -> internalLogProvider.assertNoMessagesContaining( fulltextDescriptor.name() ) );
+        onBothLogProviders( logProvider -> internalLogProvider.rawMessageMatcher().assertNotContains( nativeBtree10Descriptor.name() ) );
+        onBothLogProviders( logProvider -> internalLogProvider.rawMessageMatcher().assertNotContains( fulltextDescriptor.name() ) );
         userLogProvider.print( System.out );
     }
 
@@ -887,8 +888,7 @@ public class IndexingServiceTest
             }
 
             @Override
-            public void feed( LongObjectMap<List<PropertyCommand>> propCommandsByNodeId, LongObjectMap<List<PropertyCommand>> propCommandsByRelationshipId,
-                    LongObjectMap<NodeCommand> nodeCommands, LongObjectMap<RelationshipCommand> relationshipCommands )
+            public void feed( EntityCommandGrouper<NodeCommand>.Cursor nodeCommands, EntityCommandGrouper<RelationshipCommand>.Cursor relationshipCommands )
             {
                 throw new UnsupportedOperationException();
             }
@@ -997,11 +997,11 @@ public class IndexingServiceTest
 
         // THEN
         verify( indexProvider ).getPopulator( eq( forSchema( forLabel( 0, 0 ), PROVIDER_DESCRIPTOR ).withId( 0 ) ),
-                any( IndexSamplingConfig.class ) );
+                any( IndexSamplingConfig.class ), any() );
         verify( indexProvider ).getPopulator( eq( forSchema( forLabel( 0, 1 ), PROVIDER_DESCRIPTOR ).withId( 1 ) ),
-                any( IndexSamplingConfig.class ) );
+                any( IndexSamplingConfig.class ), any() );
         verify( indexProvider ).getPopulator( eq( forSchema( forLabel( 1, 0 ), PROVIDER_DESCRIPTOR ).withId( 2 ) ),
-                any( IndexSamplingConfig.class ) );
+                any( IndexSamplingConfig.class ), any() );
 
         waitForIndexesToComeOnline( indexing, 0, 1, 2 );
     }
@@ -1148,7 +1148,7 @@ public class IndexingServiceTest
         IndexProviderMap providerMap = life.add( new DefaultIndexProviderMap( buildIndexDependencies( provider ), config ) );
         TokenNameLookup mockLookup = mock( TokenNameLookup.class );
 
-        List<StoreIndexDescriptor> indexes = new ArrayList<>();
+        List<SchemaRule> indexes = new ArrayList<>();
         int nextIndexId = 1;
         StoreIndexDescriptor populatingIndex = storeIndex( nextIndexId, nextIndexId++, 1, PROVIDER_DESCRIPTOR );
         when( provider.getInitialState( populatingIndex ) ).thenReturn( POPULATING );
@@ -1195,7 +1195,7 @@ public class IndexingServiceTest
         providerMap.init();
         TokenNameLookup mockLookup = mock( TokenNameLookup.class );
 
-        List<StoreIndexDescriptor> indexes = new ArrayList<>();
+        List<SchemaRule> indexes = new ArrayList<>();
         int nextIndexId = 1;
         StoreIndexDescriptor populatingIndex = storeIndex( nextIndexId, nextIndexId++, 1, PROVIDER_DESCRIPTOR );
         when( provider.getInitialState( populatingIndex ) ).thenReturn( POPULATING );
@@ -1423,7 +1423,7 @@ public class IndexingServiceTest
 
     private EntityUpdates addNodeUpdate( long nodeId, Object propertyValue, int labelId )
     {
-        return EntityUpdates.forEntity( nodeId ).withTokens( labelId )
+        return EntityUpdates.forEntity( nodeId, false ).withTokens( labelId )
                 .added( index.schema().getPropertyId(), Values.of( propertyValue ) ).build();
     }
 
@@ -1454,7 +1454,7 @@ public class IndexingServiceTest
     {
         when( indexProvider.getInitialState( any( StoreIndexDescriptor.class ) ) ).thenReturn( ONLINE );
         when( indexProvider.getProviderDescriptor() ).thenReturn( PROVIDER_DESCRIPTOR );
-        when( indexProvider.getPopulator( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) ) )
+        when( indexProvider.getPopulator( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ), any() ) )
                 .thenReturn( populator );
         data.getsProcessedByStoreScanFrom( storeView );
         when( indexProvider.getOnlineAccessor( any( StoreIndexDescriptor.class ), any( IndexSamplingConfig.class ) ) )
